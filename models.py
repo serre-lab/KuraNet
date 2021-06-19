@@ -22,18 +22,18 @@ class KuraNet(torch.nn.Module):
          
            Initialization keyword arguments are
 
-           * num_hid_units (int, default=256): number of hidden neurons in each layer of the connectivity network. Range : [1, infty)
-           * avg_deg (float, default=1.0): average degree of underlying graph. Range : (0,infty)
-           * symmetric (bool, default=True): whether the graph with be undirected (True) or directed (False).
-           * rand_inds (bool, default=False): whether or not to use random updates during ODE solution.
-           * adjoint (bool, default=False): whether or not to solve adjoint system for parameter updates. See torchdiffeq documentation. 
-           * solver_method (str, default='euler'): solver method for ODEs. Range: see torchdiffeq documentation.
-           * alpha (float, default=.1): step size for ODE solver. Range: (0,infty)
-           * gd_steps (int, deafult=50): number of steps to integrate for loss calculation. Range: [0, infty)
-           * burn_in_steps (int, default=100): number of burn_in_steps to discard before integrating the loss. Total number of steps is gd plus burn_in. Range : [0,infty)
+           * num_hid_units (int, default=256)     : number of hidden neurons in each layer of the connectivity network. Range : [1, infty)
+           * avg_deg (float, default=1.0)         : average degree of underlying graph. Range : (0,infty)
+           * symmetric (bool, default=True)       : whether the graph with be undirected (True) or directed (False).
+           * rand_inds (bool, default=False)      : whether or not to use random updates during ODE solution.
+           * adjoint (bool, default=False)        : whether or not to solve adjoint system for parameter updates. See torchdiffeq documentation. 
+           * solver_method (str, default='euler') : solver method for ODEs. Range: see torchdiffeq documentation.
+           * alpha (float, default=.1)            : step size for ODE solver. Range: (0,infty)
+           * gd_steps (int, deafult=50)           : number of steps to integrate for loss calculation. Range: [0, infty)
+           * burn_in_steps (int, default=100)     : number of burn_in_steps to discard before integrating the loss. Total number of steps is gd plus burn_in. Range : [0,infty)
            '''
        
-
+        # Initialize connectivity network
         self.layers = torch.nn.Sequential(
             torch.nn.Linear(2*feature_dim, num_hid_units),
             torch.nn.BatchNorm1d(num_hid_units),
@@ -43,6 +43,7 @@ class KuraNet(torch.nn.Module):
             torch.nn.LeakyReLU(),
             torch.nn.Linear(num_hid_units,1,bias=False))
 
+        # Set attributes
         self.symmetric = symmetric
         self.avg_deg = avg_deg
         self.rand_inds = rand_inds
@@ -56,16 +57,16 @@ class KuraNet(torch.nn.Module):
            
            Positional arguments are
            
-           * alpha (float): step size. Range: [0,infty)
-           * burn_in_steps (int): number of steps to discard before integrating loss. Range: [0,infty)
-           * gd_steps (int): number of steps to integrate loss'''
+           * alpha (float)       : step size. Range: [0,infty)
+           * burn_in_steps (int) : number of steps to discard before integrating loss. Range: [0,infty)
+           * gd_steps (int)      : number of steps to integrate loss'''
  
         self.alpha = alpha
         self.gd_steps = gd_steps
         self.burn_in_steps=burn_in_steps
 
-        burn_in_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.burn_in_steps)), 0)
-        grad_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.gd_steps + 1)), 0)
+        burn_in_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.burn_in_steps)), 0) # grid for burn in
+        grad_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.gd_steps + 1)), 0) # grid for loss
         self.grids = [burn_in_integration_grid, grad_integration_grid]
 
     def run(self,x):
@@ -77,7 +78,7 @@ class KuraNet(torch.nn.Module):
 
         Returns
 
-        trajectory (tensor):  '''
+        trajectory ((T_neg + burn_in_steps + grad_steps) x (k+1) x n-dim tensor): the full dynamical trajectory of length T_neg (maximal delay) + burn_in_steps + grad_steps '''
 
         # Preliminary
         num_units = x.shape[0]
@@ -99,21 +100,35 @@ class KuraNet(torch.nn.Module):
 
             grid += t
 
-            if g < 2 :
+            if g < 2 : # For burn_in and negative time, no gradient
                 torch.set_grad_enabled(False) 
             else: 
-                torch.set_grad_enabled(True)
+                torch.set_grad_enabled(True) # Turn on gradient for last grid
 
             y = torch.cat([x, init_phase], dim=-1)
-	
+            
+            # Solve ODE	
             trajectory = self.solver(self, y, grid, rtol=1e-3, atol=1e-5, method=self.solver_method) 
             all_trajectories.append(trajectory[...,-1])
             init_phase = trajectory[...,-1][-1,:].unsqueeze(1) 
+            # Update time variable
             t += len(grid) * self.alpha
         
         return torch.cat(all_trajectories,0)
 
     def forward(self, t, y):
+
+        '''forward: one solver update step. Used by self.solver object. Separates input, y, into its constituents, including the current phase and the node
+           features. Then computes couplings as a function of these features. Finally returns the gradient at time t at the current phase. 
+
+           Positional arguments are 
+         
+           * t (1-dim tensor)         : the current time step. The system can be made non-autonomous by introducing dependence on t (not implemented)
+           * y ((k+1) x n-dim tensor) : the dynamical state of the system with k+1 (feature dim + phase) x n (network size) dimensions. Includes both current phase and node features.
+
+           Returns
+
+           * delta (n-dim tensor) : the gradient at the current phase/time. Fed into torchdiffeq backend. '''
 
         # Unpack input 
         phase = y[:,-1]
@@ -157,25 +172,43 @@ class KuraNet(torch.nn.Module):
         return delta
 
     def set_batch_size(self, batch_size):
+        '''set_batch_size: sets the dynamical batch size. This is the number of units sampled for updating if random sampling is enabled.
+
+        Positional arguments are
+
+        * batch_size (int) : the dynamic batch size'''
         self.batch_size = batch_size
        
     def get_couplings(self, x):
+
+        '''get_couplings: return couplings as a function of node features, x. 
+
+           Positional arguments are
+
+           * x ( ( k x n-dim tensor) : the k-dim node features corresponding to each of the n nodes.
+
+           Returns
+ 
+           * couplings (n x n-dim tensor) : the n x n coupling/weight matrix.
+           * mask (n-dim tensor)          : the indices used in sampling. Used later for plotting.'''
         num_units = x.shape[0]
 
         if self.rand_inds:
-            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach()
+            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach() # sample self.batch_size nodes
         else:
-            mask = torch.tensor(np.arange(num_units)).to(x.device)
+            mask = torch.tensor(np.arange(num_units)).to(x.device) # Otherwise mask comprises all network indices.
 
+        # Subsampled node features
         _x = x[mask]
-
-        _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2)
+        _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2) # all pairs
 
         #Infer couplings
         couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
+        # Normalize for fixed degree
         couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
+
+        # Symmetrize if necessary
         if self.symmetric:
             couplings = .5*(couplings + couplings.transpose(1,0))
 
         return couplings, mask
-
