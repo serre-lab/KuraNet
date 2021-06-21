@@ -1,0 +1,3 @@
+# KuraNet: a fully-differentiable Kuramoto model for understanding quenched disorder in oscillator networks. 
+
+The Kuramoto model is a standard model of coupled oscillators used in the study of nonlinear systems. This repository contains the code for a fully-differentiable version of this model in the form of "KuraNet". KuraNet is used for understanding the relationship between node features and dynamical system behavior by modeling this relationship as a differentiable, parametrized function. This function is a deep neural network trained by gradient descent using a [torchdiffeq](https://www.github.com/rtqichen/torchdiffeq "torchdiffeq") backend. This repo contains models and data suitable for training 

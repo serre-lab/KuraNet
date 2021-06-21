@@ -1,0 +1,7 @@
+numpy == 1.18.1
+torch == 1.4.0
+torchdiffeq == 0.0.1
+matplotlib == 3.0.3
+notebook == 6.0.3
+tqdm == 4.43.0
+torchvision == 0.5.0

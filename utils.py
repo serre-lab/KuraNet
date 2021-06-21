@@ -1,18 +1,15 @@
-import os
 import matplotlib.pyplot as plt
 from matplotlib import rc
 plt.style.use('ggplot')
+import os
+import numpy as np
 import torch
 from torch.nn.functional import softmax
 from scipy.special import softmax as np_softmax
-from scipy.linalg import toeplitz, circulant
 import numpy as np
-from torch.autograd import Variable
 from torch.distributions import uniform, cauchy, normal, relaxed_bernoulli, negative_binomial
-import matplotlib.animation as animation
 import time
 import pickle
-import ipdb
 
 # Loss functions and statistics
 

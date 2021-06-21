@@ -59,7 +59,7 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
         batch_size = 100
 
     # Initialize model
-    kn = connectivity_net(3, avg_deg=avg_deg, num_hid_units=num_hid_units,
+    kn = KuraNet(3, avg_deg=avg_deg, num_hid_units=num_hid_units,
                           rand_inds=rand_inds,
                           adjoint=adjoint, solver_method=solver_method,
                           alpha=alpha, gd_steps=gd_steps,

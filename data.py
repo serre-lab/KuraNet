@@ -2,6 +2,7 @@ import os
 import torch
 import numpy as np
 from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdmn
 import subprocess
 from torch.distributions import uniform, cauchy, normal, relaxed_bernoulli, negative_binomial
 import ipdb
@@ -70,14 +71,17 @@ def make_data(data_name,**kwargs):
     torch.manual_seed(seed)
     data_base_dir = kwargs['data_base_dir']
     num_samples = int(kwargs['num_samples'])
+    nbk         = bool(kwargs['notebook'])
     data_dir    = os.path.join(data_base_dir, data_name)
     if os.path.exists(data_dir):
         subprocess.call('rm -rf {}'.format(data_dir), shell=True)
 
+    progress = tqdmn if nbk else tqdm
+
     for regime in ['train', 'test']:
         os.makedirs(os.path.join(data_dir, regime, '0'))
         print('Generating {} {} data'.format(data_name, regime))
-        for n in tqdm(range(num_samples)):
+        for n in progress(range(num_samples)):
             x = generator.sample(sample_shape=torch.Size([1,])).numpy()
             full_path = os.path.join(data_dir,regime, '0', 'sample_%05d.npy' % n) 
             np.save(full_path,x)

@@ -7,17 +7,14 @@ from matplotlib import cm
 from matplotlib.lines import Line2D
 import torch
 from torchvision.datasets import DatasetFolder
-from torchvision import transforms
 from torch.utils.data import DataLoader
 import numpy as np
-import networkx as nx
-from networkx.algorithms import community
 import argparse
 from utils import load_object, circular_variance, c_x, save_object, yield_zero_column
-from models import connectivity_net
+from models import KuraNet
 from configparser import ConfigParser
 import os, csv
-import ipdb
+
 seed = 0
 np.random.seed(seed)
 torch.manual_seed(seed)
