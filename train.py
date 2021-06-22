@@ -7,11 +7,13 @@ import time
 from utils import circular_variance, c_x, save_object, yield_zero_column
 from configparser import ConfigParser
 import argparse
+import copy
 from models import KuraNet
+import ipdb
 
 def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretrained=False,num_epochs=10,batch_size=None, 
                               burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False,
-                              loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0,
+                              loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0, max_grad_norm=10.0,
                               num_hid_units=256, verbose=0, show_every=50,num_eval_batches=1,rand_inds=False, device='cpu'):
 
     ''' optimize_connectivity_net: Train an instance of Kuranet on the provided data. Initializes a model, 
@@ -84,9 +86,12 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
     lossh_train = []
     lossh_test  = []
     cxh         = []
-	
-    train_omega_dl, train_h_dl, train_tau_dl = train_dls['omega'], train_dls['h'], train_dls['tau']
-    test_omega_dl, test_h_dl, test_tau_dl = test_dls['omega'], test_dls['h'], test_dls['tau']
+
+    data_keys = [key for key in train_dls.keys()]
+    train_dls = [train_dls[key] for key in data_keys]	
+    test_dls = [test_dls[key] for key in data_keys]	
+    #train_omega_dl, train_h_dl, train_tau_dl = train_dls['omega'], train_dls['h'], train_dls['tau']
+    #test_omega_dl, test_h_dl, test_tau_dl = test_dls['omega'], test_dls['h'], test_dls['tau']
 
 
     # Begin training
@@ -94,13 +99,15 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
         print('Training. Epoch {}.'.format(e))
         # Train 
         kn.train()
-        for i, ((omega, _),(h, _), (tau, _)) in enumerate(zip(train_omega_dl, train_h_dl, train_tau_dl)):
+        for i, X in enumerate(zip(*train_dls)):
+
+            x = {key : y.to(device) for (key, (y,_)) in zip(data_keys, X)}
             start = time.time()
             opt.zero_grad()		
 
 	    # Fix max delay for memory problems
-            tau = torch.where(tau > 40.0, 40.0 * torch.ones_like(tau),tau)
-            x = torch.cat([omega,h, tau],dim=-1).to(device)
+            if 'tau' in x.keys():
+                x['tau']  = torch.where(x['tau'] > 40.0, 40.0 * torch.ones_like(x['tau']),x['tau'])
 
             # Run model, get trajectory
             trajectory = kn.run(x)
@@ -110,11 +117,11 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
             ll = loss_func(truncated_trajectory)
             lossh_train.append(ll.detach().cpu().numpy())
             ll.backward()
+            norm=torch.nn.utils.clip_grad_norm_(kn.parameters(), max_norm=max_grad_norm, norm_type=2)
             opt.step()
 
             # Calculate statistic
-            couplings, mask = kn.get_couplings(x)
-            cxh.append(c_x(x[mask], couplings).detach().cpu().numpy())
+            cxh.append(kn.current_cx)
 
             # Logging
             stop = time.time()
@@ -188,9 +195,8 @@ if __name__=='__main__':
     device=config_dict['device']
     solver_method = config_dict['solver_method']
     batch_size= int(config_dict['batch_size'])
-    omega_name=config_dict['omega_name']
-    h_name=config_dict['h_name']
-    tau_name=config_dict['tau_name']
+    data_names=config_dict['data_names'].split(',')
+    dist_names=config_dict['dist_names'].split(',')
     avg_deg = float(config_dict['avg_deg'])
     num_hid_units= int(config_dict['num_hid_units'])
     gd_steps = int(config_dict['gd_steps'])
@@ -200,6 +206,7 @@ if __name__=='__main__':
     lr=float(config_dict['lr'])
     optimizer=config_dict['optimizer']
     momentum= float(config_dict['momentum'])
+    max_grad_norm= float(config_dict['max_grad_norm'])
     show_every = int(config_dict['show_every'])
     num_eval_batches=int(config_dict['num_eval_batches'])
     verbose = int(config_dict['verbose'])
@@ -222,22 +229,24 @@ if __name__=='__main__':
     train_dls  = {}
     test_dls   = {}
 
-    for name, dist in zip([omega_name, h_name, tau_name],['omega', 'h', 'tau']):
-        if name != 'degenerate':
-            train_dirs[dist] = os.path.join(config_dict['data_base_dir'], name, 'train')
-            test_dirs[dist] = os.path.join(config_dict['data_base_dir'], name, 'test')
-            train_dss[dist] = DatasetFolder(train_dirs[dist], np.load, 'npy')
-            test_dss[dist] = DatasetFolder(test_dirs[dist], np.load, 'npy')
-            train_dls[dist] = DataLoader(train_dss[dist], batch_size=num_units, shuffle=False, drop_last=True)
-            test_dls[dist] = DataLoader(test_dss[dist], batch_size=num_units, shuffle=False, drop_last=True)
+    #for name, dist in zip([omega_name, h_name, tau_name],['omega', 'h', 'tau']):
+    for dist_name, data_name in zip(dist_names, data_names):
+        if dist_name != 'degenerate':
+            train_dirs[data_name] = os.path.join(config_dict['data_base_dir'], dist_name, 'train')
+            test_dirs[data_name] = os.path.join(config_dict['data_base_dir'], dist_name, 'test')
+            train_dss[data_name] = DatasetFolder(train_dirs[data_name], np.load, 'npy')
+            test_dss[data_name] = DatasetFolder(test_dirs[data_name], np.load, 'npy')
+            train_dls[data_name] = DataLoader(train_dss[data_name], batch_size=num_units, shuffle=False, drop_last=True)
+            test_dls[data_name] = DataLoader(test_dss[data_name], batch_size=num_units, shuffle=False, drop_last=True)
         else:
-            train_dls[dist] = yield_zero_column(num_batches,num_units)
-            test_dls[dist] = yield_zero_column(num_batches,num_units)
+            train_dls[data_name] = yield_zero_column(num_batches,num_units)
+            test_dls[data_name] = yield_zero_column(num_batches,num_units)
 
     # Train model
     all_train_losses = []
     all_test_losses = []
     all_cx = []
+    current_best_model = ([],-1,[],[],1.0) # model, seed, cx, test loss
     for seed in range(meta_args.num_seeds):
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -246,36 +255,21 @@ if __name__=='__main__':
 							      pretrained=pretrained,  num_epochs=num_epochs, batch_size=batch_size,
                                                               burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha,
                                                               solver_method=solver_method, adjoint=adjoint,
-                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum,
+                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm,
                                                               num_hid_units=num_hid_units, verbose=verbose, show_every=show_every,
                                                               num_eval_batches=num_eval_batches, rand_inds=rand_inds, device=device)
 
 
 
         # Save each train loss curve and the final evaluation loss. 
-        all_train_losses.append(loss_train)
-        all_test_losses.append(loss_test[-1])
-        all_cx.append(cx)
+        if loss_test[-1] < current_best_model[-1]: current_best_model = (copy.deepcopy(kn.cpu()),seed,cx,loss_train,loss_test)
 
-    # Choose the seed corresponding to the best evaluation loss, set it, and retrain on that seed. 
-    best_seed = np.argmin(all_test_losses) if meta_args.num_seeds > 0 else meta_args.best_seed
-    np.random.seed(best_seed)
-    torch.manual_seed(best_seed)
-
-    loss_train, loss_test, kn, cx = optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=avg_deg,
-							      pretrained=pretrained,  num_epochs=num_epochs, batch_size=batch_size,
-                                                              burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha,
-                                                              solver_method=solver_method, adjoint=adjoint,
-                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum,
-                                                              num_hid_units=num_hid_units, verbose=verbose, show_every=show_every,
-                                                              num_eval_batches=num_eval_batches, rand_inds=rand_inds, device=device)
-    # Save model and other data
-    torch.save(kn.state_dict(), os.path.join(save_path, 'model.pt')) 
+    torch.save(current_best_model[0].state_dict(), os.path.join(save_path, 'model.pt')) 
    
     dict = config_dict 
-    dict['train_loss'] = np.array(loss_train)
-    dict['test_loss'] = np.array(loss_test)
-    dict['best_seed'] = best_seed
+    dict['train_loss'] = np.array(current_best_model[3])
+    dict['test_loss'] = np.array(current_best_model[4])
+    dict['best_seed'] = current_best_model[1]
     dict['c_x'] = cx
 
     name = os.path.join(save_path, 'results')

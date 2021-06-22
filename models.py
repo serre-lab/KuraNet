@@ -81,10 +81,17 @@ class KuraNet(torch.nn.Module):
         trajectory ((T_neg + burn_in_steps + grad_steps) x (k+1) x n-dim tensor): the full dynamical trajectory of length T_neg (maximal delay) + burn_in_steps + grad_steps '''
 
         # Preliminary
-        num_units = x.shape[0]
-        tau = x[:,2]
+        num_units = x['omega'].shape[0]
+        self.fixed_couplings=False
+        tau = x['tau']
         T_neg = tau.max().long() + 1
-        self.past_phase = torch.zeros((T_neg,num_units)).to(x.device)
+        self.past_phase = torch.zeros((T_neg,num_units)).to(x['omega'].device)
+
+        x = torch.cat([x['omega'], x['h'], x['tau']], dim=-1)
+        if num_units == self.batch_size:
+            couplings, _ = self.get_couplings(x)
+            self.fixed = couplings
+            self.fixed_couplings = True
 
         # Integration grids
         tneg_integration_grid = torch.cumsum(torch.tensor([self.alpha] * T_neg),0)
@@ -198,17 +205,24 @@ class KuraNet(torch.nn.Module):
         else:
             mask = torch.tensor(np.arange(num_units)).to(x.device) # Otherwise mask comprises all network indices.
 
-        # Subsampled node features
-        _x = x[mask]
-        _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2) # all pairs
+        if self.fixed_couplings:
+            return self.fixed[mask,:][:,mask], mask
+        else:
+            # Subsampled node features
+            _x = x[mask]
+            _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2) # all pairs
 
-        #Infer couplings
-        couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
-        # Normalize for fixed degree
-        couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
+            #Infer couplings
+            couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
+            # Normalize for fixed degree
+            couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
 
-        # Symmetrize if necessary
-        if self.symmetric:
-            couplings = .5*(couplings + couplings.transpose(1,0))
+            # Symmetrize if necessary
+            if self.symmetric:
+                couplings = .5*(couplings + couplings.transpose(1,0))
+
+            self.current_couplings = couplings.detach().clone()
+            self.current_mask      = mask.detach().clone()
+            self.current_cx        = c_x(x[mask], couplings).detach().cpu().numpy()
 
         return couplings, mask
