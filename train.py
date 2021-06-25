@@ -1,18 +1,18 @@
 import os
 import torch
 import numpy as np
-from torchvision.datasets import DatasetFolder
+from torch.utils.data.dataset import TensorDataset
 from torch.utils.data import DataLoader
 import time
-from utils import circular_variance, c_x, save_object, yield_zero_column
+from utils import circular_variance, c_x, save_object, yield_zero_column, circular_moments, cohn_loss, make_masks
 from configparser import ConfigParser
 import argparse
 import copy
-from models import KuraNet
+from models import KuraNet, KuraNet_xy
 import ipdb
 
-def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretrained=False,num_epochs=10,batch_size=None, 
-                              burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False,
+def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', avg_deg=1.0, num_classes=0,pretrained=False,num_epochs=10,
+                              batch_size=None, burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False,
                               loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0, max_grad_norm=10.0,
                               num_hid_units=256, verbose=0, show_every=50,num_eval_batches=1,rand_inds=False, device='cpu'):
 
@@ -21,12 +21,14 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
 
         Positional arguments are
 
-        * num_units (int)  : the number of units/nodes in the underlying graph on which dynamics will be run. Range: [2,infty)
-        * train_dls (dict) : dictionary containing the training data for each type of node feature (which can come from different data sets).  
-        * test_dls (dict)  : " testing data "
+        * num_units (int)    : the number of units/nodes in the underlying graph on which dynamics will be run. Range: [2,infty)
+        * feature_dim (int)  : the dimension of the feature associated to each node. Range: [1,infty)
+        * train_dls (dict)   : dictionary containing the training data for each type of node feature (which can come from different data sets).  
+        * test_dls (dict)    : " testing data "
 
         Keyword arguments are
 
+        * model_tpye (str, default='full')     : which KuraNet to use. 'full' gives the model will all intrinsic node features. 'xy' is reduced model (faster than 'full' with zero features)
         * avg_deg (float, default=1.0)         : the average degree of the underlying graph. Range : (0,infty)
         * pretrained (bool, default=False)     : whether or not to load a pretrained model.  
         * num_epochs (int, default=10)         : number of training and testing epochs. Range : [1, infty)
@@ -55,17 +57,15 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
         '''
     
     # If batch_size not speccified, set it as num_units as long as network is small. Otherwise, set to 100. 
-    if batch_size is None and num_units <= 100:
-        batch_size = num_units
-    elif batch_size is None and num_units > 100:
-        batch_size = 100
+    assert batch_size <= num_units, "batch_size can be at most num_units"
 
     # Initialize model
-    kn = KuraNet(3, avg_deg=avg_deg, num_hid_units=num_hid_units,
-                          rand_inds=rand_inds,
+    KN_object = KuraNet if model_type == 'full' else KuraNet_xy
+    kn = KN_object(feature_dim, avg_deg=avg_deg, num_hid_units=num_hid_units,
+                          rand_inds=rand_inds,normalize=normalize,
                           adjoint=adjoint, solver_method=solver_method,
                           alpha=alpha, gd_steps=gd_steps,
-                          burn_in_steps=burn_in_steps).to(device)
+                          burn_in_steps=burn_in_steps).to(device) 
     kn.set_batch_size(batch_size)
 
     # load network if necessary
@@ -75,6 +75,12 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
      # Set loss function
     if loss_type == 'circular_variance':
         loss_func = circular_variance
+    elif loss_type == 'circular_moments':
+        loss_func = circular_moments
+    elif loss_type == 'cohn_loss':
+        loss_func = cohn_loss
+    else:
+        raise Exception('Loss type not recognized.')
 
     # Initialize optimizer
     if optimizer == 'Adam':
@@ -90,64 +96,74 @@ def optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=1.0, pretr
     data_keys = [key for key in train_dls.keys()]
     train_dls = [train_dls[key] for key in data_keys]	
     test_dls = [test_dls[key] for key in data_keys]	
-    #train_omega_dl, train_h_dl, train_tau_dl = train_dls['omega'], train_dls['h'], train_dls['tau']
-    #test_omega_dl, test_h_dl, test_tau_dl = test_dls['omega'], test_dls['h'], test_dls['tau']
-
 
     # Begin training
     for e in range(num_epochs):
         print('Training. Epoch {}.'.format(e))
         # Train 
         kn.train()
-        for i, X in enumerate(zip(*train_dls)):
-
-            x = {key : y.to(device) for (key, (y,_)) in zip(data_keys, X)}
+        for i, batch in enumerate(zip(*train_dls)):
+            X = {key : x.float().to(device) for (key, (x,_)) in zip(data_keys, batch)}
+            Y = {key : y for (key, (_,y)) in zip(data_keys, batch)} 
+            # This is only used for cluster synchrony experiments
+            if num_classes > 0:
+                masks = make_masks(Y,num_classes,device)
+            else:
+                masks = None
             start = time.time()
             opt.zero_grad()		
 
 	    # Fix max delay for memory problems
-            if 'tau' in x.keys():
-                x['tau']  = torch.where(x['tau'] > 40.0, 40.0 * torch.ones_like(x['tau']),x['tau'])
-
+            if 'tau' in X.keys():
+                X['tau']  = torch.where(X['tau'] > 40.0, 40.0 * torch.ones_like(X['tau']),X['tau'])
             # Run model, get trajectory
-            trajectory = kn.run(x)
+            trajectory = kn.run(X)
            
             # Calculate and record loss. Update
             truncated_trajectory = trajectory[-gd_steps:,...]
-            ll = loss_func(truncated_trajectory)
+            ll = loss_func(truncated_trajectory, masks=masks)
             lossh_train.append(ll.detach().cpu().numpy())
             ll.backward()
             norm=torch.nn.utils.clip_grad_norm_(kn.parameters(), max_norm=max_grad_norm, norm_type=2)
             opt.step()
 
             # Calculate statistic
-            cxh.append(kn.current_cx)
+            if measure_cx:
+                cxh.append(kn.current_cx)
 
             # Logging
             stop = time.time()
             if verbose > 0 and (i % show_every) == 0:
-                total_norm = 0
-                for p, param in enumerate(kn.parameters()):
-                    param_norm = param.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-                average_norm = (total_norm ** (1. / 2))
-                print('Training batch: {}. Time/Batch: {}. Loss: {}. Gradient norm: {}.'.format(i, np.round(stop - start,4), lossh_train[-1], total_norm))
+                print('Training batch: {}. Time/Batch: {}. Loss: {}. Gradient norm: {}.'.format(i, np.round(stop - start,4), lossh_train[-1], min(max_grad_norm,norm)))
+            if i > 300: break
         
         # Testing 
         print('Testing. Epoch {}'.format(e))
         with torch.no_grad():
             kn.eval()
             lossh_test_epoch = []
-            for j, ((omega, _),(h, _), (tau, _)) in enumerate(zip(test_omega_dl, test_h_dl, test_tau_dl)):
+            for j, batch in enumerate(zip(*test_dls)):
+                X = {key : x.float().to(device) for (key, (x,_)) in zip(data_keys, batch)}
+                Y = {key : y for (key, (_,y)) in zip(data_keys, batch)}
+                # This is only used for cluster synchrony experiments
+                if num_classes > 0:
+                    masks = make_masks(Y,num_classes,device)
+                else:
+                    masks = None
+            
+                start = time.time()
+                opt.zero_grad()		
+    
+    	        # Fix max delay for memory problems
+                if 'tau' in X.keys():
+                    X['tau']  = torch.where(X['tau'] > 40.0, 40.0 * torch.ones_like(X['tau']),X['tau'])
                 start = time.time()
                 # Fix max delay for memory problems
-                tau = torch.where(tau > 40.0, 40.0 * torch.ones_like(tau),tau)
-                x = torch.cat([omega,h, tau],dim=-1).to(device)
 
-                trajectory = kn.run(x)
+                trajectory = kn.run(X)
                 truncated_trajectory = trajectory[-gd_steps:,...]
             
-                ll = circular_variance(truncated_trajectory)
+                ll = loss_func(truncated_trajectory, masks=masks)
                 lossh_test_epoch.append(ll.detach().cpu().numpy())
 
                 stop = time.time()
@@ -188,6 +204,9 @@ if __name__=='__main__':
     exp_name = config_dict['exp_name']
     save_dir = config_dict['save_dir']
     data_base_dir = config_dict['data_base_dir']
+    model_type = config_dict['model_type']
+    feature_dim = int(config_dict['feature_dim'])
+    num_classes = int(config_dict['num_classes'])
     num_units = int(config_dict['num_units'])
     num_samples = int(config_dict['num_samples'])
     num_epochs = int(config_dict['num_epochs'])
@@ -210,11 +229,13 @@ if __name__=='__main__':
     show_every = int(config_dict['show_every'])
     num_eval_batches=int(config_dict['num_eval_batches'])
     verbose = int(config_dict['verbose'])
+    normalize = config.getboolean(meta_args.name, 'normalize')
     symmetric = config.getboolean(meta_args.name, 'symmetric')
     grad_thresh = float(config_dict['grad_thresh'])
     num_batches = int(float(num_samples) / num_units)
     rand_inds = config.getboolean(meta_args.name, 'rand_inds')
     adjoint = config.getboolean(meta_args.name, 'adjoint')
+    measure_cx = config.getboolean(meta_args.name, 'measure_cx')
 
     # Create directory where model and intermitten results will be saved.  
     save_path = os.path.join(save_dir, exp_name)
@@ -222,47 +243,39 @@ if __name__=='__main__':
         os.makedirs(os.path.join(save_dir, exp_name))
 
     # Load training and testing data.
-    train_dirs = {}
-    test_dirs  = {}
-    train_dss  = {}
-    test_dss   = {}
     train_dls  = {}
     test_dls   = {}
 
     #for name, dist in zip([omega_name, h_name, tau_name],['omega', 'h', 'tau']):
-    for dist_name, data_name in zip(dist_names, data_names):
-        if dist_name != 'degenerate':
-            train_dirs[data_name] = os.path.join(config_dict['data_base_dir'], dist_name, 'train')
-            test_dirs[data_name] = os.path.join(config_dict['data_base_dir'], dist_name, 'test')
-            train_dss[data_name] = DatasetFolder(train_dirs[data_name], np.load, 'npy')
-            test_dss[data_name] = DatasetFolder(test_dirs[data_name], np.load, 'npy')
-            train_dls[data_name] = DataLoader(train_dss[data_name], batch_size=num_units, shuffle=False, drop_last=True)
-            test_dls[data_name] = DataLoader(test_dss[data_name], batch_size=num_units, shuffle=False, drop_last=True)
-        else:
-            train_dls[data_name] = yield_zero_column(num_batches,num_units)
-            test_dls[data_name] = yield_zero_column(num_batches,num_units)
+
+    for dl, regime in zip([train_dls, test_dls], ['train', 'test']):
+        for dist_name, data_name in zip(dist_names, data_names):
+            if dist_name != 'degenerate':
+                dt = np.load(os.path.join(data_base_dir, data_name, dist_name, regime, 'features.npz'))
+                ds = TensorDataset(torch.FloatTensor(dt['x']), torch.LongTensor(dt['y'].astype(np.int32)))
+            else:
+                ds = TensorDataset(torch.zeros(num_samples).float(), torch.zeros(num_samples).long())
+                
+            dl[data_name] = DataLoader(ds, batch_size=num_units, shuffle=True, drop_last=True)
 
     # Train model
     all_train_losses = []
     all_test_losses = []
     all_cx = []
-    current_best_model = ([],-1,[],[],1.0) # model, seed, cx, test loss
+    current_best_model = ([],-1,[],[],np.inf) # model, seed, cx, test loss
     for seed in range(meta_args.num_seeds):
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        loss_train, loss_test, kn, cx = optimize_connectivity_net(num_units, train_dls, test_dls, avg_deg=avg_deg,
+        loss_train, loss_test, kn, cx = optimize_connectivity_net(num_units,feature_dim, train_dls, test_dls, model_type=model_type,avg_deg=avg_deg,num_classes=num_classes,
 							      pretrained=pretrained,  num_epochs=num_epochs, batch_size=batch_size,
                                                               burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha,
                                                               solver_method=solver_method, adjoint=adjoint,
                                                               loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm,
                                                               num_hid_units=num_hid_units, verbose=verbose, show_every=show_every,
                                                               num_eval_batches=num_eval_batches, rand_inds=rand_inds, device=device)
-
-
-
         # Save each train loss curve and the final evaluation loss. 
-        if loss_test[-1] < current_best_model[-1]: current_best_model = (copy.deepcopy(kn.cpu()),seed,cx,loss_train,loss_test)
+        if loss_test[-1] < current_best_model[-1]: current_best_model = (kn.cpu(),seed,cx,loss_train,loss_test[-1])
 
     torch.save(current_best_model[0].state_dict(), os.path.join(save_path, 'model.pt')) 
    
@@ -270,7 +283,8 @@ if __name__=='__main__':
     dict['train_loss'] = np.array(current_best_model[3])
     dict['test_loss'] = np.array(current_best_model[4])
     dict['best_seed'] = current_best_model[1]
-    dict['c_x'] = cx
+    if measure_cx:
+        dict['c_x'] = cx
 
     name = os.path.join(save_path, 'results')
     save_object(dict, name)

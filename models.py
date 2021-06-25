@@ -9,7 +9,7 @@ from torchdiffeq import odeint, odeint_adjoint
 import ipdb
 
 class KuraNet(torch.nn.Module):
-    def __init__(self,feature_dim, num_hid_units=256, avg_deg=1.0,
+    def __init__(self,feature_dim, num_hid_units=128, normalize=True, avg_deg=1.0,
                  symmetric=True, rand_inds=False, adjoint=False, solver_method='euler',
                  alpha=.1, gd_steps=50, burn_in_steps=100):
         super(KuraNet, self).__init__()
@@ -23,6 +23,7 @@ class KuraNet(torch.nn.Module):
            Initialization keyword arguments are
 
            * num_hid_units (int, default=256)     : number of hidden neurons in each layer of the connectivity network. Range : [1, infty)
+           * normalize (bool,default=True)        : whether or not to normalize weight matrix.
            * avg_deg (float, default=1.0)         : average degree of underlying graph. Range : (0,infty)
            * symmetric (bool, default=True)       : whether the graph with be undirected (True) or directed (False).
            * rand_inds (bool, default=False)      : whether or not to use random updates during ODE solution.
@@ -45,6 +46,7 @@ class KuraNet(torch.nn.Module):
 
         # Set attributes
         self.symmetric = symmetric
+        self.normalize = normalize
         self.avg_deg = avg_deg
         self.rand_inds = rand_inds
         self.solver = odeint_adjoint if adjoint else odeint
@@ -86,8 +88,7 @@ class KuraNet(torch.nn.Module):
         tau = x['tau']
         T_neg = tau.max().long() + 1
         self.past_phase = torch.zeros((T_neg,num_units)).to(x['omega'].device)
-
-        x = torch.cat([x['omega'], x['h'], x['tau']], dim=-1)
+        x = torch.cat([x['omega'].unsqueeze(-1), x['h'].unsqueeze(-1), x['tau'].unsqueeze(-1)], dim=-1)
         if num_units == self.batch_size:
             couplings, _ = self.get_couplings(x)
             self.fixed = couplings
@@ -215,7 +216,8 @@ class KuraNet(torch.nn.Module):
             #Infer couplings
             couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
             # Normalize for fixed degree
-            couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
+            if self.normalize:
+                couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
 
             # Symmetrize if necessary
             if self.symmetric:
@@ -226,3 +228,144 @@ class KuraNet(torch.nn.Module):
             self.current_cx        = c_x(x[mask], couplings).detach().cpu().numpy()
 
         return couplings, mask
+
+class KuraNet_xy(torch.nn.Module):
+    def __init__(self, feature_dim, num_hid_units=100,
+                 symmetric=False, avg_deg=None,rand_inds=False, gain=1.0,adjoint=False,solver_method='euler', normalize=False,
+                 alpha=15.,burn_in_steps=0,gd_steps=100):
+        super(KuraNet_xy, self).__init__()
+
+        self.layers = torch.nn.Sequential(
+            torch.nn.Linear(2*feature_dim, num_hid_units),
+            torch.nn.BatchNorm1d(num_hid_units),
+            torch.nn.LeakyReLU(),
+            torch.nn.Linear(num_hid_units, num_hid_units),
+            torch.nn.BatchNorm1d(num_hid_units),
+            torch.nn.LeakyReLU(),
+            torch.nn.Linear(num_hid_units,1,bias=False)
+        )
+        self.gain      = gain
+        self.symmetric = symmetric
+        self.normalize = normalize
+        self.rand_inds = rand_inds
+        self.solver = odeint_adjoint if adjoint else odeint
+        self.solver_method = solver_method
+        self.control   = False
+        self.set_grids(alpha,burn_in_steps, gd_steps)
+
+
+        for layer in self.layers:
+            try :
+                torch.nn.init.xavier_normal_(layer.weight, gain=self.gain)
+            except:
+                pass
+        
+        
+    def set_grids(self, alpha, burn_in_steps, gd_steps):
+        self.alpha = alpha
+        self.gd_steps = gd_steps
+        self.burn_in_steps = burn_in_steps
+        self.burn_in_chunks = 1
+        self.gd_chunks = 1
+
+        self.grids = []
+        if isinstance(burn_in_steps, (list, tuple)):
+            for steps in burn_in_steps:
+                burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
+                self.grids.append(burn_in_integration_grid)
+            
+            self.burn_in_chunks = len(burn_in_steps)
+        else:
+            burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (burn_in_steps)), 0) - alpha
+            self.grids.append(burn_in_integration_grid)
+
+        if isinstance(gd_steps, (list, tuple)):
+            for steps in gd_steps:
+                grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
+                self.grids.append(grad_integration_grid)
+
+            self.gd_chunks = len(gd_steps)
+        else:
+            grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (gd_steps)), 0) - alpha
+            self.grids.append(grad_integration_grid)
+
+
+    def set_batch_size(self, batch_size):
+        self.batch_size = batch_size
+
+    def get_couplings(self, x):
+        num_units = x.shape[0]
+
+        if self.rand_inds:
+            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach()
+        else:
+            mask = torch.tensor(np.arange(num_units)).to(x.device)
+
+        if self.fixed_couplings:
+            return self.fixed[mask,:][:,mask], mask
+        else:
+            _x = x[mask]
+
+            _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2)
+
+            #Infer couplings
+            couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
+
+            if self.normalize:
+                couplings = torch.nn.functional.normalize(couplings, p=2, dim=1)
+            if self.symmetric:
+                couplings = .5*(couplings + couplings.transpose(1,0))
+
+            return couplings, mask
+
+    def run(self, x, full_trajectory=False):
+        x = [x[key] for key in x.keys()][0]
+        num_units = x.shape[0]
+        self.fixed_couplings = False
+        if num_units == self.batch_size:
+            couplings, _ = self.get_couplings(x)
+            self.fixed = couplings
+            self.fixed_couplings = True
+            
+        init_phase = torch.normal(np.pi,1,(num_units,)).float().unsqueeze(1).to(x.device)
+        all_trajectories = []
+        t = 0
+        for g, grid in enumerate(self.grids):
+            if len(grid) == 0: continue
+            grid = grid.to(x.device)
+
+            grid += t
+            if self.training:
+                if g < self.burn_in_chunks:
+                    torch.set_grad_enabled(False)
+                else:
+                    torch.set_grad_enabled(True)
+            y = torch.cat([x,init_phase],dim=-1)
+            trajectory = self.solver(self, y, grid, rtol=1e-3, atol=1e-5, method=self.solver_method)
+            if g >= self.burn_in_chunks or full_trajectory:
+                all_trajectories.append(trajectory[...,-1])
+
+            init_phase = trajectory[...,-1][-1,:].unsqueeze(1)
+            t += len(grid) * self.alpha
+
+        return torch.cat(all_trajectories,0)
+
+    def forward(self, t, y):
+        phase = y[:,-1]
+        x     = y[:,:-1]
+        num_units = phase.shape[0]
+        couplings, mask = self.get_couplings(x)
+
+        _x = x[mask]
+        _phase = phase[mask]
+
+        phase_diffs = torch.matmul(couplings, torch.sin(_phase)) * torch.cos(_phase)\
+                    - torch.matmul(couplings, torch.cos(_phase)) * torch.sin(_phase)
+
+        local_delta = phase_diffs / self.batch_size
+        delta = torch.zeros_like(phase)
+        delta[mask] = local_delta
+
+        delta = torch.cat([torch.zeros_like(x), delta.unsqueeze(-1)], -1)
+        return delta
+
