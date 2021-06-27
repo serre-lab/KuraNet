@@ -232,39 +232,7 @@ def make_all_data(num_samples=10000, data_dir='/media/data_cifs/projects/prj_syn
     for dn in data_names:
         make_data(dn,**data_dict)
 
-def make_data(data_name,**kwargs):
-    if data_name == 'o_uniform1':
-        seed = 0
-        generator = get_dist('uniform',low=-1.0,high=1.0)
-    elif data_name == 'h_uniform1':
-        seed = 1
-        generator = get_dist('uniform',low=-1.0,high=1.0)
-    elif data_name == 'o_uniform2':
-        seed = 2
-        generator = get_dist('uniform', low=2.0, high=4.0)
-    elif data_name == 'negative_binomial':
-        seed = 3
-        generator = get_dist('negative_binomial',loc=.5,scale=15)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    data_base_dir = kwargs['data_base_dir']
-    num_samples = int(kwargs['num_samples'])
-    nbk         = bool(kwargs['notebook'])
-    data_dir    = os.path.join(data_base_dir, data_name)
-    if os.path.exists(data_dir):
-        subprocess.call('rm -rf {}'.format(data_dir), shell=True)
-
-    progress = tqdmn if nbk else tqdm
-
-    for regime in ['train', 'test']:
-        os.makedirs(os.path.join(data_dir, regime, '0'))
-        print('Generating {} {} data'.format(data_name, regime))
-        for n in progress(range(num_samples)):
-            x = generator.sample(sample_shape=torch.Size([1,])).numpy()
-            full_path = os.path.join(data_dir,regime, '0', 'sample_%05d.npy' % n) 
-            np.save(full_path,x)
-
-def make_data2(data_name, dist_name,**kwargs):
+def make_data(data_name, dist_name,**kwargs):
     if dist_name == 'uniform1':
         seed = 0
         generator = get_dist('uniform',low=-1.0,high=1.0)
