@@ -9,7 +9,7 @@ import torch
 argparser = argparse.ArgumentParser()
 argparser.add_argument('--experiments', nargs='+', required=True)
 argparser.add_argument('--seed_search', type=lambda x:bool(strtobool(x)), default=True)
-argparser.add_argument('--data_dir', type=str, default='/media/data_cifs/projects/prj_synchrony/data')
+argparser.add_argument('--data_dir', type=str, default='~')
 argparser.add_argument('--num_samples', type=int,default=10000)
 argparser.add_argument('--seed', type=int,default=0)
 argparser.add_argument('--num_seeds', type=int,default=1)

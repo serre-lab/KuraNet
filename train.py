@@ -4,17 +4,18 @@ import numpy as np
 from torch.utils.data.dataset import TensorDataset
 from torch.utils.data import DataLoader
 import time
-from utils import circular_variance, c_x, save_object, yield_zero_column, circular_moments, cohn_loss, make_masks
+from utils import circular_variance, c_x, save_object, circular_moments, cohn_loss, make_masks
 from configparser import ConfigParser
 import argparse
 import copy
-from models import KuraNet, KuraNet_xy
+from models import KuraNet_xy, KuraNet_full
 import ipdb
 
-def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', avg_deg=1.0, num_classes=0,pretrained=False,num_epochs=10,
-                              batch_size=None, burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False,
-                              loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0, max_grad_norm=10.0,
-                              num_hid_units=256, verbose=0, show_every=50,num_eval_batches=1,rand_inds=False, device='cpu'):
+def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', normalize=True, avg_deg=1.0, num_classes=0,num_epochs=10,
+                              batch_size=None, burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False, initial_phase='zero',
+                              loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0, max_grad_norm=10.0, set_gain=False, gain=1.0,
+                              num_hid_units=128, verbose=0, measure_cx=False, show_every=50,num_eval_batches=1,rand_inds=False,
+                              pretrained=False,save_path='~',device='cpu'):
 
     ''' optimize_connectivity_net: Train an instance of Kuranet on the provided data. Initializes a model, 
         trains it, and evaluates it over several epochs. 
@@ -28,24 +29,29 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
 
         Keyword arguments are
 
-        * model_tpye (str, default='full')     : which KuraNet to use. 'full' gives the model will all intrinsic node features. 'xy' is reduced model (faster than 'full' with zero features)
+        * model_type (str, default='full')     : which KuraNet: 'full' gives the model will all intrinsic node features. 'xy' is reduced model (faster than 'full' with zero features)
+        * normalize (bool, default=True)       : whether or not couplings are normalized. Type of normalization depends on model_type. 
         * avg_deg (float, default=1.0)         : the average degree of the underlying graph. Range : (0,infty)
-        * pretrained (bool, default=False)     : whether or not to load a pretrained model.  
+        * num_classes (int, default=0)         : number of classes in the data set. If not a classification task (e.g. global synchrony), set to 0. Range: [0,infty)
         * num_epochs (int, default=10)         : number of training and testing epochs. Range : [1, infty)
-        * batch_size (int/None, default=None)  : the dynamic batch size used in the solver update. If None, set to num_units (i.e. the whole graph is updated at once). Range : [1,num_units]
-        * burn_in_steps (int, default=100)     : the number of steps before the loss is integrated. Range : [0, infty)
-        * grad_steps (int, default=50)         : the number of steps during which the loss is integrated after burn in. Total timesteps is burn_in_steps + grad_steps.  Range : [0, infty)
+        * batch_size (int/None, default=None)  : the dynamic batch size used by solver. If None, set to num_units (i.e. the whole graph is updated at once). Range : [1,num_units]
+        * burn_in_steps (int, default=100)     : # of steps before the loss is integrated. Range : [0, infty)
+        * grad_steps (int, default=50)         : # of steps during which the loss is integrated after burn in. Total timesteps are burn_in_steps + grad_steps.  Range : [0, infty)
         * alpha (float, default=.1)            : the step size for the ODE solver. Range : (0,infty)
         * solver_method (str, default='euler') : solver method for ODE. Range : see torchdiffeq documentation
         * adjoint (bool, default=False)        : whether or not to calculate parameter gradients by solving an adjoint system. See torchdiffeq documentation. 
         * optimizer (str, deafult='Adam')      : which optimizer to use for learning connectivity net parameters (Note: this is not the ODE solver). Range : {'SGD', 'Adam'}
         * lr (float, default=.01)              : optimizer learning rate. Range : (0,infty)
         * momentum (float, default=0.0)        : optimizer momentum. Relevant for SGD and potentially custom solvers. 
-        * num_hid_units (int, default=256)     : the number of hidden neurons in each of the connectivity net's layers. Range : (1,infty)
+        * max_grad_norm (float, default=10.0)  : the maximum allowed euclidean norm for the gradient of all concatenated model parameters. Range: (0, infty)
+        * num_hid_units (int, default=128)     : the number of hidden neurons in each of the connectivity net's layers. Range : (1,infty)
         * verbose (int, deafult=0)             : controls how much information is displayed during training. Currently binary for either no inffformation or all. Range : (0, infty)
         * show_every (int, deafult=50)         : period for displaying training information. Range : (1, infty)
+        * measure_cx (bool, default=False)     : whether or not to measure the c_x statistic. 
         * num_eval_batches (int, default=1)    : how many testing batches to run each epoch.Low values speed up training but are worse for estimating testing error. Range : (1, infty)
         * rand_inds (bool, default=False)      : make True to use random sampling during ODE update. Usually only needed for evaluation on very large networks.
+        * pretrained (bool, default=False)     : whether or not a model is loaded from save_path. 
+        * save_path (str, default='~')         : path from which to load a pretrained model. 
         * device (str, default='cpu')          : device to which tensors are cast. Range : {'cpu', 'cuda'}
     
         Returns
@@ -60,17 +66,18 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
     assert batch_size <= num_units, "batch_size can be at most num_units"
 
     # Initialize model
-    KN_object = KuraNet if model_type == 'full' else KuraNet_xy
-    kn = KN_object(feature_dim, avg_deg=avg_deg, num_hid_units=num_hid_units,
-                          rand_inds=rand_inds,normalize=normalize,
-                          adjoint=adjoint, solver_method=solver_method,
-                          alpha=alpha, gd_steps=gd_steps,
-                          burn_in_steps=burn_in_steps).to(device) 
+    KN_model = KuraNet_full if model_type == 'full' else KuraNet_xy
+    kn = KN_model(feature_dim, avg_deg=avg_deg,
+                 num_hid_units=num_hid_units, initial_phase=initial_phase,
+                 rand_inds=rand_inds,normalize=normalize,
+                 adjoint=adjoint, solver_method=solver_method,set_gain=set_gain, gain=gain,
+                 alpha=alpha, gd_steps=gd_steps,
+                 burn_in_steps=burn_in_steps).to(device) 
     kn.set_batch_size(batch_size)
 
     # load network if necessary
     if pretrained:
-        kn.load_state_dict(torch.load('/media/data_cifs/projects/prj_synchrony/results/models/brede100.pt'))
+        kn.load_state_dict(torch.load(os.path.join(save_path,model.pt)))
 
      # Set loss function
     if loss_type == 'circular_variance':
@@ -105,6 +112,7 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
         for i, batch in enumerate(zip(*train_dls)):
             X = {key : x.float().to(device) for (key, (x,_)) in zip(data_keys, batch)}
             Y = {key : y for (key, (_,y)) in zip(data_keys, batch)} 
+
             # This is only used for cluster synchrony experiments
             if num_classes > 0:
                 masks = make_masks(Y,num_classes,device)
@@ -135,8 +143,6 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
             stop = time.time()
             if verbose > 0 and (i % show_every) == 0:
                 print('Training batch: {}. Time/Batch: {}. Loss: {}. Gradient norm: {}.'.format(i, np.round(stop - start,4), lossh_train[-1], min(max_grad_norm,norm)))
-            if i > 300: break
-        
         # Testing 
         print('Testing. Epoch {}'.format(e))
         with torch.no_grad():
@@ -195,47 +201,50 @@ if __name__=='__main__':
         raise ValueError('If you want to search over multiple random seeds, set argument best_seed to -1!')
 
     # Load experimental parameters
-    config = ConfigParser()
+    config = ConfigParser(allow_no_value=True)
     config.read('experiments.cfg')
     config_dict = {}
     for (key, val) in config.items(meta_args.name):
         config_dict[key] = val
 
-    exp_name = config_dict['exp_name']
-    save_dir = config_dict['save_dir']
-    data_base_dir = config_dict['data_base_dir']
-    model_type = config_dict['model_type']
-    feature_dim = int(config_dict['feature_dim'])
-    num_classes = int(config_dict['num_classes'])
-    num_units = int(config_dict['num_units'])
-    num_samples = int(config_dict['num_samples'])
-    num_epochs = int(config_dict['num_epochs'])
-    pretrained = config.getboolean(meta_args.name,'pretrained')
-    device=config_dict['device']
-    solver_method = config_dict['solver_method']
-    batch_size= int(config_dict['batch_size'])
-    data_names=config_dict['data_names'].split(',')
-    dist_names=config_dict['dist_names'].split(',')
-    avg_deg = float(config_dict['avg_deg'])
-    num_hid_units= int(config_dict['num_hid_units'])
-    gd_steps = int(config_dict['gd_steps'])
-    alpha = float(config_dict['alpha'])
-    burn_in_steps=int(config_dict['burn_in_steps'])
-    loss_type=config_dict['loss_type']
-    lr=float(config_dict['lr'])
-    optimizer=config_dict['optimizer']
-    momentum= float(config_dict['momentum'])
-    max_grad_norm= float(config_dict['max_grad_norm'])
-    show_every = int(config_dict['show_every'])
-    num_eval_batches=int(config_dict['num_eval_batches'])
-    verbose = int(config_dict['verbose'])
-    normalize = config.getboolean(meta_args.name, 'normalize')
-    symmetric = config.getboolean(meta_args.name, 'symmetric')
-    grad_thresh = float(config_dict['grad_thresh'])
-    num_batches = int(float(num_samples) / num_units)
-    rand_inds = config.getboolean(meta_args.name, 'rand_inds')
-    adjoint = config.getboolean(meta_args.name, 'adjoint')
-    measure_cx = config.getboolean(meta_args.name, 'measure_cx')
+    exp_name          = config_dict['exp_name']
+    save_dir          = config_dict['save_dir']
+    data_base_dir     = config_dict['data_base_dir']
+    data_names        = config_dict['data_names'].split(',')
+    dist_names        = config_dict['dist_names'].split(',')
+    model_type        = config_dict['model_type']
+    feature_dim       = int(config_dict['feature_dim'])
+    num_classes       = config_dict['num_classes'] 
+    num_classes       = int(num_classes) if num_classes.isnumeric() else num_classes
+    num_units         = int(config_dict['num_units'])
+    num_samples       = int(config_dict['num_samples'])
+    num_epochs        = int(config_dict['num_epochs'])
+    pretrained        = config.getboolean(meta_args.name, 'pretrained')
+    device            = config_dict['device']
+    solver_method     = config_dict['solver_method']
+    batch_size        = int(config_dict['batch_size'])
+    avg_deg           = float(config_dict['avg_deg'])
+    num_hid_units     = int(config_dict['num_hid_units'])
+    gd_steps          = int(config_dict['gd_steps'])
+    alpha             = float(config_dict['alpha'])
+    initial_phase     = config_dict['initial_phase']
+    burn_in_steps     = int(config_dict['burn_in_steps'])
+    loss_type         = config_dict['loss_type']
+    lr                = float(config_dict['lr'])
+    optimizer         = config_dict['optimizer']
+    momentum          = float(config_dict['momentum'])
+    max_grad_norm     = float(config_dict['max_grad_norm'])
+    set_gain          = config.getboolean(meta_args.name, 'set_gain')
+    gain              = float(config_dict['gain'])
+    show_every        = int(config_dict['show_every'])
+    num_eval_batches  = int(config_dict['num_eval_batches'])
+    verbose           = int(config_dict['verbose'])
+    normalize         = config.getboolean(meta_args.name, 'normalize')
+    symmetric         = config.getboolean(meta_args.name, 'symmetric')
+    num_batches       = int(float(num_samples) / num_units)
+    rand_inds         = config.getboolean(meta_args.name, 'rand_inds')
+    adjoint           = config.getboolean(meta_args.name, 'adjoint')
+    measure_cx        = config.getboolean(meta_args.name, 'measure_cx')
 
     # Create directory where model and intermitten results will be saved.  
     save_path = os.path.join(save_dir, exp_name)
@@ -245,8 +254,6 @@ if __name__=='__main__':
     # Load training and testing data.
     train_dls  = {}
     test_dls   = {}
-
-    #for name, dist in zip([omega_name, h_name, tau_name],['omega', 'h', 'tau']):
 
     for dl, regime in zip([train_dls, test_dls], ['train', 'test']):
         for dist_name, data_name in zip(dist_names, data_names):
@@ -258,6 +265,9 @@ if __name__=='__main__':
                 
             dl[data_name] = DataLoader(ds, batch_size=num_units, shuffle=True, drop_last=True)
 
+    if num_classes == 'lookup':
+        num_classes= len(set(dt['y']).union(set(dt['y'])))
+
     # Train model
     all_train_losses = []
     all_test_losses = []
@@ -268,15 +278,16 @@ if __name__=='__main__':
         torch.manual_seed(seed)
 
         loss_train, loss_test, kn, cx = optimize_connectivity_net(num_units,feature_dim, train_dls, test_dls, model_type=model_type,avg_deg=avg_deg,num_classes=num_classes,
-							      pretrained=pretrained,  num_epochs=num_epochs, batch_size=batch_size,
-                                                              burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha,
+							      pretrained=pretrained, save_path=save_path,  num_epochs=num_epochs, batch_size=batch_size,
+                                                              burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha, initial_phase=initial_phase,
                                                               solver_method=solver_method, adjoint=adjoint,
-                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm,
+                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm, set_gain=set_gain, gain=gain,
                                                               num_hid_units=num_hid_units, verbose=verbose, show_every=show_every,
                                                               num_eval_batches=num_eval_batches, rand_inds=rand_inds, device=device)
         # Save each train loss curve and the final evaluation loss. 
         if loss_test[-1] < current_best_model[-1]: current_best_model = (kn.cpu(),seed,cx,loss_train,loss_test[-1])
 
+    # Save model and experimental information
     torch.save(current_best_model[0].state_dict(), os.path.join(save_path, 'model.pt')) 
    
     dict = config_dict 

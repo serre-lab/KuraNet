@@ -4,14 +4,15 @@ from scipy.special import softmax as np_softmax
 import numpy as np
 from torch.autograd import Variable
 from torch.distributions import uniform, cauchy, normal, relaxed_bernoulli
-from utils import c_x, sparse_dense_mul
+from utils import c_x 
 from torchdiffeq import odeint, odeint_adjoint
 import ipdb
 
 class KuraNet(torch.nn.Module):
-    def __init__(self,feature_dim, num_hid_units=128, normalize=True, avg_deg=1.0,
+    def __init__(self,feature_dim, num_hid_units=128, normalize='node', avg_deg=1.0,
                  symmetric=True, rand_inds=False, adjoint=False, solver_method='euler',
-                 alpha=.1, gd_steps=50, burn_in_steps=100):
+                 alpha=.1, gd_steps=50, burn_in_steps=100,initial_phase='zero',
+                 set_gain=False, gain=1.0):
         super(KuraNet, self).__init__()
 
         '''KuraNet: object for running Kuramoto dynamics and predicting couplings from data. 
@@ -33,7 +34,7 @@ class KuraNet(torch.nn.Module):
            * gd_steps (int, deafult=50)           : number of steps to integrate for loss calculation. Range: [0, infty)
            * burn_in_steps (int, default=100)     : number of burn_in_steps to discard before integrating the loss. Total number of steps is gd plus burn_in. Range : [0,infty)
            '''
-       
+
         # Initialize connectivity network
         self.layers = torch.nn.Sequential(
             torch.nn.Linear(2*feature_dim, num_hid_units),
@@ -49,11 +50,64 @@ class KuraNet(torch.nn.Module):
         self.normalize = normalize
         self.avg_deg = avg_deg
         self.rand_inds = rand_inds
+        self.initial_phase = initial_phase
         self.solver = odeint_adjoint if adjoint else odeint
         self.solver_method = solver_method
         self.set_grids(alpha, burn_in_steps, gd_steps)
 
-    def set_grids(self,alpha, burn_in_steps, gd_steps):
+        if set_gain:
+            for layer in self.layers:
+                try :
+                    torch.nn.init.xavier_normal_(layer.weight, gain=gain)
+                except:
+                    pass
+
+    def set_grids(self, alpha, burn_in_steps, gd_steps):
+        '''set_grids: discretize ODE time domain. We call the discretized intervals "grids" and place relevant grids in the attribute self.grids.
+           Each grid consists of x_steps number of alpha-sized steps where x is either burn_in or gd.
+           
+           Positional arguments are
+           
+           * alpha (float)       : step size. Range: [0,infty)
+           * burn_in_steps (int) : number of steps to discard before integrating loss. Range: [0,infty)
+           * gd_steps (int)      : number of steps to integrate loss'''
+ 
+        self.alpha = alpha
+        self.gd_steps = gd_steps
+        self.burn_in_steps = burn_in_steps
+
+        self.grids = []
+        if isinstance(burn_in_steps, (list, tuple)):
+
+            self.burn_in_chunks = len(burn_in_steps)
+            for steps in burn_in_steps:
+                burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
+                self.grids.append(burn_in_integration_grid)
+            
+            self.burn_in_chunks = len(burn_in_steps)
+        else:
+
+            self.burn_in_chunks = 1
+            burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (burn_in_steps)), 0) - alpha
+            self.grids.append(burn_in_integration_grid)
+
+        if isinstance(gd_steps, (list, tuple)):
+
+            self.gd_chunks = len(gd_steps)
+            for steps in gd_steps:
+                grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
+                self.grids.append(grad_integration_grid)
+
+            self.gd_chunks = len(gd_steps)
+        else:
+
+            self.gd_chunks = 1
+            grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (gd_steps)), 0) - alpha
+            self.grids.append(grad_integration_grid)
+
+
+
+    def set_grids_old(self,alpha, burn_in_steps, gd_steps):
         '''set_grids: discretize ODE time domain. We call the discretized intervals "grids" and place relevant grids in the attribute self.grids.
            Each grid consists of x_steps number of alpha-sized steps where x is either burn_in or gd.
            
@@ -71,7 +125,7 @@ class KuraNet(torch.nn.Module):
         grad_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.gd_steps + 1)), 0) # grid for loss
         self.grids = [burn_in_integration_grid, grad_integration_grid]
 
-    def run(self,x):
+    def run(self,x, full_trajectory=True):
         '''run: solve Kuramoto equation of motion and return a trajectory given the node features, x
 
         Positional arguments are:
@@ -83,29 +137,40 @@ class KuraNet(torch.nn.Module):
         trajectory ((T_neg + burn_in_steps + grad_steps) x (k+1) x n-dim tensor): the full dynamical trajectory of length T_neg (maximal delay) + burn_in_steps + grad_steps '''
 
         # Preliminary
-        num_units = x['omega'].shape[0]
+        keys = list(x.keys())
+        num_units = x[keys[0]].shape[0]
+        device = x[keys[0]].device
         self.fixed_couplings=False
-        tau = x['tau']
-        T_neg = tau.max().long() + 1
-        self.past_phase = torch.zeros((T_neg,num_units)).to(x['omega'].device)
-        x = torch.cat([x['omega'].unsqueeze(-1), x['h'].unsqueeze(-1), x['tau'].unsqueeze(-1)], dim=-1)
+        if 'tau' in keys:
+            tau = x['tau']
+            max_delay = tau.max().long()
+            T_neg = max_delay + 1 if max_delay > 0 else max_delay
+        self.past_phase = torch.zeros((T_neg,num_units)).to(device)
+        # Integration grids
+        tneg_integration_grid = torch.cumsum(torch.tensor([self.alpha] * T_neg),0)
+
+        x = torch.cat([x[key].unsqueeze(-1) for key in x.keys()], dim=-1)
+
         if num_units == self.batch_size:
             couplings, _ = self.get_couplings(x)
             self.fixed = couplings
             self.fixed_couplings = True
 
-        # Integration grids
-        tneg_integration_grid = torch.cumsum(torch.tensor([self.alpha] * T_neg),0)
-
         # Initialize phase
-        init_phase = torch.zeros((num_units,1)).to(x.device)
+        if self.initial_phase == 'zero':
+            init_phase = torch.zeros((num_units,1)).to(x.device)
+        elif self.initial_phase == 'normal':
+            init_phase = torch.normal(np.pi,1,(num_units,)).float().unsqueeze(1).to(x.device)
+        else:
+            raise Exception('Phase initialization not recognized.')
+
 
         # Solve ODE on all grids
         all_trajectories = []
         t = 0
         for g, grid in enumerate([tneg_integration_grid] + self.grids):
             self.tneg = True if g < 1 else False
-
+            if len(grid) == 0 : continue
             grid += t
 
             if g < 2 : # For burn_in and negative time, no gradient
@@ -117,12 +182,71 @@ class KuraNet(torch.nn.Module):
             
             # Solve ODE	
             trajectory = self.solver(self, y, grid, rtol=1e-3, atol=1e-5, method=self.solver_method) 
-            all_trajectories.append(trajectory[...,-1])
+            if g >= self.burn_in_chunks + 1 or full_trajectory:
+                all_trajectories.append(trajectory[...,-1])
             init_phase = trajectory[...,-1][-1,:].unsqueeze(1) 
             # Update time variable
             t += len(grid) * self.alpha
         
         return torch.cat(all_trajectories,0)
+
+    def set_batch_size(self, batch_size):
+        '''set_batch_size: sets the dynamical batch size. This is the number of units sampled for updating if random sampling is enabled.
+
+        Positional arguments are
+
+        * batch_size (int) : the dynamic batch size'''
+        self.batch_size = batch_size
+       
+    def get_couplings(self, x):
+
+        '''get_couplings: return couplings as a function of node features, x. 
+
+           Positional arguments are
+
+           * x ( ( k x n-dim tensor) : the k-dim node features corresponding to each of the n nodes.
+
+           Returns
+ 
+           * couplings (n x n-dim tensor) : the n x n coupling/weight matrix.
+           * mask (n-dim tensor)          : the indices used in sampling. Used later for plotting.'''
+        num_units = x.shape[0]
+
+        if self.rand_inds:
+            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach() # sample self.batch_size nodes
+        else:
+            mask = torch.tensor(np.arange(num_units)).to(x.device) # Otherwise mask comprises all network indices.
+
+        if self.fixed_couplings:
+            return self.fixed[mask,:][:,mask], mask
+        else:
+            # Subsampled node features
+            _x = x[mask]
+            _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2) # all pairs
+
+            #Infer couplings
+            couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
+            # Normalize for fixed degree
+            if self.normalize == 'node':
+                couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
+            elif self.normalize == 'graph':
+                couplings = torch.nn.functional.normalize(couplings, p=2, dim=1)
+
+            # Symmetrize if necessary
+            if self.symmetric:
+                couplings = .5*(couplings + couplings.transpose(1,0))
+
+            self.current_couplings = couplings.detach().clone()
+            self.current_mask      = mask.detach().clone()
+            self.current_cx        = c_x(x[mask], couplings).detach().cpu().numpy()
+
+        return couplings, mask
+
+class KuraNet_full(KuraNet):
+    def __init__(self, *args, **kwargs):
+        super(KuraNet_full, self).__init__(*args, **kwargs)
+        '''KuraNet_full : '''
+
 
     def forward(self, t, y):
 
@@ -179,178 +303,14 @@ class KuraNet(torch.nn.Module):
 
         return delta
 
-    def set_batch_size(self, batch_size):
-        '''set_batch_size: sets the dynamical batch size. This is the number of units sampled for updating if random sampling is enabled.
+class KuraNet_xy(KuraNet):
+    def __init__(self, *args, **kwargs):
+    #def __init__(self,feature_dim, num_hid_units=128, normalize='graph', avg_deg=1.0,
+    #             symmetric=True, rand_inds=False, adjoint=False, solver_method='euler',
+    #             alpha=.1, gd_steps=50, burn_in_steps=0, initial_phase='normal', set_gain=True, gain=1.0):
+        super(KuraNet_xy, self).__init__(*args, **kwargs)
 
-        Positional arguments are
-
-        * batch_size (int) : the dynamic batch size'''
-        self.batch_size = batch_size
-       
-    def get_couplings(self, x):
-
-        '''get_couplings: return couplings as a function of node features, x. 
-
-           Positional arguments are
-
-           * x ( ( k x n-dim tensor) : the k-dim node features corresponding to each of the n nodes.
-
-           Returns
- 
-           * couplings (n x n-dim tensor) : the n x n coupling/weight matrix.
-           * mask (n-dim tensor)          : the indices used in sampling. Used later for plotting.'''
-        num_units = x.shape[0]
-
-        if self.rand_inds:
-            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach() # sample self.batch_size nodes
-        else:
-            mask = torch.tensor(np.arange(num_units)).to(x.device) # Otherwise mask comprises all network indices.
-
-        if self.fixed_couplings:
-            return self.fixed[mask,:][:,mask], mask
-        else:
-            # Subsampled node features
-            _x = x[mask]
-            _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2) # all pairs
-
-            #Infer couplings
-            couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
-            # Normalize for fixed degree
-            if self.normalize:
-                couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
-
-            # Symmetrize if necessary
-            if self.symmetric:
-                couplings = .5*(couplings + couplings.transpose(1,0))
-
-            self.current_couplings = couplings.detach().clone()
-            self.current_mask      = mask.detach().clone()
-            self.current_cx        = c_x(x[mask], couplings).detach().cpu().numpy()
-
-        return couplings, mask
-
-class KuraNet_xy(torch.nn.Module):
-    def __init__(self, feature_dim, num_hid_units=100,
-                 symmetric=False, avg_deg=None,rand_inds=False, gain=1.0,adjoint=False,solver_method='euler', normalize=False,
-                 alpha=15.,burn_in_steps=0,gd_steps=100):
-        super(KuraNet_xy, self).__init__()
-
-        self.layers = torch.nn.Sequential(
-            torch.nn.Linear(2*feature_dim, num_hid_units),
-            torch.nn.BatchNorm1d(num_hid_units),
-            torch.nn.LeakyReLU(),
-            torch.nn.Linear(num_hid_units, num_hid_units),
-            torch.nn.BatchNorm1d(num_hid_units),
-            torch.nn.LeakyReLU(),
-            torch.nn.Linear(num_hid_units,1,bias=False)
-        )
-        self.gain      = gain
-        self.symmetric = symmetric
-        self.normalize = normalize
-        self.rand_inds = rand_inds
-        self.solver = odeint_adjoint if adjoint else odeint
-        self.solver_method = solver_method
-        self.control   = False
-        self.set_grids(alpha,burn_in_steps, gd_steps)
-
-
-        for layer in self.layers:
-            try :
-                torch.nn.init.xavier_normal_(layer.weight, gain=self.gain)
-            except:
-                pass
-        
-        
-    def set_grids(self, alpha, burn_in_steps, gd_steps):
-        self.alpha = alpha
-        self.gd_steps = gd_steps
-        self.burn_in_steps = burn_in_steps
-        self.burn_in_chunks = 1
-        self.gd_chunks = 1
-
-        self.grids = []
-        if isinstance(burn_in_steps, (list, tuple)):
-            for steps in burn_in_steps:
-                burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
-                self.grids.append(burn_in_integration_grid)
-            
-            self.burn_in_chunks = len(burn_in_steps)
-        else:
-            burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (burn_in_steps)), 0) - alpha
-            self.grids.append(burn_in_integration_grid)
-
-        if isinstance(gd_steps, (list, tuple)):
-            for steps in gd_steps:
-                grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
-                self.grids.append(grad_integration_grid)
-
-            self.gd_chunks = len(gd_steps)
-        else:
-            grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (gd_steps)), 0) - alpha
-            self.grids.append(grad_integration_grid)
-
-
-    def set_batch_size(self, batch_size):
-        self.batch_size = batch_size
-
-    def get_couplings(self, x):
-        num_units = x.shape[0]
-
-        if self.rand_inds:
-            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach()
-        else:
-            mask = torch.tensor(np.arange(num_units)).to(x.device)
-
-        if self.fixed_couplings:
-            return self.fixed[mask,:][:,mask], mask
-        else:
-            _x = x[mask]
-
-            _x = torch.cat([_x[:,None].repeat(1,self.batch_size,1),_x[None,:].repeat(self.batch_size,1,1)],dim=2)
-
-            #Infer couplings
-            couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
-
-            if self.normalize:
-                couplings = torch.nn.functional.normalize(couplings, p=2, dim=1)
-            if self.symmetric:
-                couplings = .5*(couplings + couplings.transpose(1,0))
-
-            return couplings, mask
-
-    def run(self, x, full_trajectory=False):
-        x = [x[key] for key in x.keys()][0]
-        num_units = x.shape[0]
-        self.fixed_couplings = False
-        if num_units == self.batch_size:
-            couplings, _ = self.get_couplings(x)
-            self.fixed = couplings
-            self.fixed_couplings = True
-            
-        init_phase = torch.normal(np.pi,1,(num_units,)).float().unsqueeze(1).to(x.device)
-        all_trajectories = []
-        t = 0
-        for g, grid in enumerate(self.grids):
-            if len(grid) == 0: continue
-            grid = grid.to(x.device)
-
-            grid += t
-            if self.training:
-                if g < self.burn_in_chunks:
-                    torch.set_grad_enabled(False)
-                else:
-                    torch.set_grad_enabled(True)
-            y = torch.cat([x,init_phase],dim=-1)
-            trajectory = self.solver(self, y, grid, rtol=1e-3, atol=1e-5, method=self.solver_method)
-            if g >= self.burn_in_chunks or full_trajectory:
-                all_trajectories.append(trajectory[...,-1])
-
-            init_phase = trajectory[...,-1][-1,:].unsqueeze(1)
-            t += len(grid) * self.alpha
-
-        return torch.cat(all_trajectories,0)
-
-    def forward(self, t, y):
+    def forward(t, y):
         phase = y[:,-1]
         x     = y[:,:-1]
         num_units = phase.shape[0]
@@ -368,4 +328,5 @@ class KuraNet_xy(torch.nn.Module):
 
         delta = torch.cat([torch.zeros_like(x), delta.unsqueeze(-1)], -1)
         return delta
-
+    
+    

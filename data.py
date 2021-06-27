@@ -8,6 +8,8 @@ from torch.distributions import uniform, cauchy, normal, relaxed_bernoulli, nega
 from scipy.io import loadmat
 from skimage.io import imread
 import cv2 as cv
+import os
+import urllib, tarfile
 import ipdb
 
 data_info_dict_BSDS500 = {
@@ -21,6 +23,9 @@ data_info_dict_BSDS500 = {
     "317080":{"mode":"train", "seg_ind":2, "groups":[[1,3], [4,5,6], [7]]},
     "361010":{"mode":"val", "seg_ind":3, "groups":[[5,14,17,27], [13,15,18,20], [12]]}
 }
+
+def get_BSDS_info(image_tag):
+    return data_info_dict_BSDS500[image_tag]
 
 # Fetch distribution objects for intrinsic frequencies
 
@@ -151,37 +156,47 @@ class Spirals(object):
         return x_a, branch
 
 def load_img_BSDS500(file_id, mode, seg_ind,
-                     load_dir='/media/data_cifs/projects/prj_synchrony/data/BSR/BSDS500/data'):
+                     data_dir):
     """
     Parameters:
     file_id (str):id of image
     mode (str): train|val|test
     seg_ind (int): 0~4
     """
-    img = imread(os.path.join(load_dir, 'images/{}/{}.jpg'.format(mode, file_id)))
-    mat = np.squeeze(loadmat(os.path.join(load_dir, 'groundTruth/{}/{}.mat'.format(mode, file_id)))['groundTruth'])
+    img = imread(os.path.join(data_dir, 'images/{}/{}.jpg'.format(mode, file_id)))
+    mat = np.squeeze(loadmat(os.path.join(data_dir, 'groundTruth/{}/{}.mat'.format(mode, file_id)))['groundTruth'])
     mat = mat[seg_ind][0][0][0]
     return img, mat
 
-def generate_data_BSDS500(
-    train_prop=0.5, 
-    load_dir='/media/data_cifs/projects/prj_synchrony/data/BSR/BSDS500/data', 
-    data_dir='/media/data_cifs/projects/prj_synchrony/data',
-    download=False):
+def generate_data_BSDS500(data_dir,image_dir=None,train_prop=.5,download=False):
     """
     Parameters:
     repeat_num (int): number of different train-test splits
     train_prop (float): proportion for training (0~1)
     data_dir (str): path for saving created datasets
     """
+    from os.path import expanduser
+    home = expanduser("~")
+
+    image_dir = home if image_dir is None else image_dir
+    if download:
+        url='http://www.eecs.berkeley.edu/Research/Projects/CS/vision/grouping/BSR/BSR_bsds500.tgz'
+        save_path =  os.path.join(home, 'BSR_bsds500.tgz')
+        urllib.request.urlretrieve(url, save_path)
+        file = tarfile.open(save_path)
+        file.extractall(os.path.join(image_dir, 'BSDS'))
+        file.close()
+        subprocess.call('rm -rf save_path&', shell=True)
+
     np.random.seed(0)
     # loop through each selected images
+    full_BSDS_path = os.path.join(image_dir, 'BSDS/BSR/BSDS500/data/')
     for d in data_info_dict_BSDS500:
         img, mat = load_img_BSDS500(
             file_id=d, 
             mode=data_info_dict_BSDS500[d]['mode'], 
             seg_ind=data_info_dict_BSDS500[d]['seg_ind'], 
-            load_dir=load_dir)
+            data_dir=full_BSDS_path)
         group_matrix = np.zeros_like(mat)
         # for each group, find the pixels. The rest pixels will be background
         for i, g in enumerate(data_info_dict_BSDS500[d]['groups']):
@@ -193,16 +208,23 @@ def generate_data_BSDS500(
         yy = np.repeat(np.linspace(0,h,h)[:,None], w, axis=1)[:,:,None] / h
         X = np.concatenate([img / 255, xx, yy], axis=-1).reshape(-1, 5)
         y = group_matrix.reshape(-1)
+
         # save data
         train_num = int(train_prop*y.shape[0])
+        inds = np.random.permutation(y.shape[0])
         for regime in ['train', 'test']:
-            inds = np.random.permutation(y.shape[0])
-            full_dir = os.path.join(data_dir, regime)
+            full_dir = os.path.join(data_dir, d,regime)
             if not os.path.exists(full_dir):
                  os.makedirs(full_dir)
-            np.savez(os.path.join(full_dir, 'features.npz'),
+            if regime is 'train':
+                np.savez(os.path.join(full_dir, 'features.npz'),
                      x=X[inds[:train_num]],
                      y=y[inds[:train_num]])
+            else:
+                np.savez(os.path.join(full_dir, 'features.npz'),
+                     x=X[inds[train_num:]],
+                     y=y[inds[train_num:]])
+
 
 def make_all_data(num_samples=10000, data_dir='/media/data_cifs/projects/prj_synchrony/data'):
     data_names = ['o_uniform1', 'h_uniform1', 'o_uniform2', 'negative_binomial']
@@ -271,8 +293,8 @@ def make_data2(data_name, dist_name,**kwargs):
         seed = 6
         generator = get_dist(dist_name,noise=.5)
         is_torch = False
-    elif dist_name == 'BSDS':
-        data_dir    = os.path.join(kwargs['data_base_dir'], data_name, dist_name)
+    elif data_name == 'BSDS':
+        data_dir    = os.path.join(kwargs['data_base_dir'], data_name)
         generate_data_BSDS500(data_dir=data_dir,download=kwargs['download'])
         return True
     else:
@@ -293,6 +315,5 @@ def make_data2(data_name, dist_name,**kwargs):
             y = np.zeros_like(x)
         else:
             x,y = generator.sample(n_samples=num_samples)
-        ipdb.set_trace()
         full_path = os.path.join(full_dir, 'features.npz') 
         np.savez(full_path,x=x,y=y)
