@@ -14,9 +14,9 @@ to install all necessary requirements (besides Python and CUDA backend).
 
 Demos for three experiments are contained in the notebooks `global.ipynb`, `cluster.ipynb` and `images.ipynb`. For example, here is (top) KuraNet learning to synchronize oscillators on a sparse graph (optimized left, control right) and (bottom) an image of an elk that KuraNet has learned to synchronize:
 
-![kuramoto](C:\Users\Matt Ricci\Desktop\kuramoto.gif)
+![kuramoto](./kuramoto.gif)
 
-![elk](C:\Users\Matt Ricci\Documents\Archive\Business\Website\webpage\images-static\elk.gif)
+![elk](./elk.gif)
 
 ## Basic Usage
 
