@@ -6,6 +6,8 @@ from data import make_all_data
 from configparser import ConfigParser
 import torch
 
+# Use this script to train multiple experiments at once. 
+
 argparser = argparse.ArgumentParser()
 argparser.add_argument('--experiments', nargs='+', required=True)
 argparser.add_argument('--seed_search', type=lambda x:bool(strtobool(x)), default=True)
@@ -32,7 +34,7 @@ config = ConfigParser()
 config.read('experiments.cfg')
 
 for e, exp in enumerate(args.experiments):
-    device = e % num_devices + 1
+    device = e % num_devices
     if not args.seed_search:
         best_seed = args.seed
         num_seeds = 0

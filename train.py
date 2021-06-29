@@ -126,10 +126,12 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
                 X['tau']  = torch.where(X['tau'] > 40.0, 40.0 * torch.ones_like(X['tau']),X['tau'])
             # Run model, get trajectory
             trajectory = kn.run(X)
-           
+    
             # Calculate and record loss. Update
             truncated_trajectory = trajectory[-gd_steps:,...]
             ll = loss_func(truncated_trajectory, masks=masks)
+            if ll == 0:
+                ipdb.set_trace()
             lossh_train.append(ll.detach().cpu().numpy())
             ll.backward()
             norm=torch.nn.utils.clip_grad_norm_(kn.parameters(), max_norm=max_grad_norm, norm_type=2)
@@ -261,8 +263,7 @@ if __name__=='__main__':
                 dt = np.load(os.path.join(data_base_dir, data_name, dist_name, regime, 'features.npz'))
                 ds = TensorDataset(torch.FloatTensor(dt['x']), torch.LongTensor(dt['y'].astype(np.int32)))
             else:
-                ds = TensorDataset(torch.zeros(num_samples).float(), torch.zeros(num_samples).long())
-                
+                ds = TensorDataset(torch.zeros(num_samples,1).float(), torch.zeros(num_samples).long())
             dl[data_name] = DataLoader(ds, batch_size=num_units, shuffle=True, drop_last=True)
 
     if num_classes == 'lookup':

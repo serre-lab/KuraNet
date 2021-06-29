@@ -11,6 +11,8 @@ from configparser import ConfigParser
 import os, csv
 import ipdb
 
+# This script is used to run evaluation. Supply one or more experiments (config headings) as a comma separated list using the shell argument --experiments to return the three evaluation metrics described in the companion manuscript. 
+
 seed = 0
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -85,18 +87,16 @@ for experiment in args.experiments:
             dt[data_name] = {}
             if dist_name != 'degenerate':
                 dt[data_name][regime] = np.load(os.path.join(data_base_dir, data_name, dist_name, regime, 'features.npz'))
-                
                 ds = TensorDataset(torch.FloatTensor(dt[data_name][regime]['x']), torch.LongTensor(dt[data_name][regime]['y'].astype(np.int32)))
             else:
                 dt[data_name][regime] = {'x': torch.zeros(num_samples).float(), 'y' : torch.zeros(num_samples).long()}
-                ds = TensorDataset(torch.zeros(num_samples).float(), torch.zeros(num_samples).long())
-                
+                ds = TensorDataset(torch.zeros(num_samples).float(), torch.zeros(num_samples).long())              
             dl[data_name] = DataLoader(ds, batch_size=num_units, shuffle=True, drop_last=True)
 
     if num_classes == 'lookup':
         num_classes= len(set(dt[data_name][regime]['y']).union(set(dt[data_name][regime]['y'])))
 
- # Initialize model
+ # Initialize models
     KN_model = KuraNet_full if model_type == 'full' else KuraNet_xy
     kn = KN_model(feature_dim, avg_deg=avg_deg, num_hid_units=num_hid_units,
                           rand_inds=rand_inds,normalize=normalize,
@@ -127,9 +127,7 @@ for experiment in args.experiments:
         raise Exception('Loss type not recognized.')
 
     data_keys = [key for key in train_dls.keys()]
-    train_dls = [train_dls[key] for key in data_keys]	
-    test_dls = [test_dls[key] for key in data_keys]	
-
+=
     with torch.no_grad():
         # Test Data
         print('Data generalization')
@@ -140,7 +138,7 @@ for experiment in args.experiments:
 
         kn.set_grids(alpha,1000,gd_steps)
         kn_control.set_grids(alpha,1000,gd_steps)
-        for i, batch in tqdm(enumerate(zip(*test_dls))):
+        for i, batch in tqdm(enumerate(zip(*[test_dls[key] for key in data_keys]))):
             break
             X = {key : x.float().to(device) for (key, (x,_)) in zip(data_keys, batch)}
             Y = {key : y for (key, (_,y)) in zip(data_keys, batch)} 
