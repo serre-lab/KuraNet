@@ -68,62 +68,45 @@ class KuraNet(torch.nn.Module):
            
            Positional arguments are
            
-           * alpha (float)       : step size. Range: [0,infty)
-           * burn_in_steps (int) : number of steps to discard before integrating loss. Range: [0,infty)
-           * gd_steps (int)      : number of steps to integrate loss'''
+           * alpha (float)                     : step size. Range: [0,infty)
+           * burn_in_steps (int or list/tuple) : if int, number of steps to discard before integrating loss. Range: [0,infty). If list/tuple, then set of steps to compute in chunks. Can help with memory problems. 
+           * gd_steps (int or list/tuple)      : if int, number of steps to integrate loss. Range: [0, infty). If list/tuple, then a set of steps to compute in chunks. Can help with memory problems. '''
  
         self.alpha = alpha
         self.gd_steps = gd_steps
         self.burn_in_steps = burn_in_steps
 
         self.grids = []
+		
+		# Make burn-in grid(s)
         if isinstance(burn_in_steps, (list, tuple)):
 
             self.burn_in_chunks = len(burn_in_steps)
             for steps in burn_in_steps:
                 burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
-                self.grids.append(burn_in_integration_grid)
+                self.grids.append(burn_in_integration_grid.float())
             
             self.burn_in_chunks = len(burn_in_steps)
         else:
 
             self.burn_in_chunks = 1
             burn_in_integration_grid = torch.cumsum(torch.tensor([alpha] * (burn_in_steps)), 0) - alpha
-            self.grids.append(burn_in_integration_grid)
-
+            self.grids.append(burn_in_integration_grid.float())
+			
+		# Make gradient grid(s)
         if isinstance(gd_steps, (list, tuple)):
 
             self.gd_chunks = len(gd_steps)
             for steps in gd_steps:
                 grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (steps)), 0) - alpha
-                self.grids.append(grad_integration_grid)
+                self.grids.append(grad_integration_grid.float())
 
             self.gd_chunks = len(gd_steps)
         else:
 
             self.gd_chunks = 1
             grad_integration_grid = torch.cumsum(torch.tensor([alpha] * (gd_steps)), 0) - alpha
-            self.grids.append(grad_integration_grid)
-
-
-
-    def set_grids_old(self,alpha, burn_in_steps, gd_steps):
-        '''set_grids: discretize ODE time domain. We call the discretized intervals "grids" and place relevant grids in the attribute self.grids.
-           Each grid consists of x_steps number of alpha-sized steps where x is either burn_in or gd.
-           
-           Positional arguments are
-           
-           * alpha (float)       : step size. Range: [0,infty)
-           * burn_in_steps (int) : number of steps to discard before integrating loss. Range: [0,infty)
-           * gd_steps (int)      : number of steps to integrate loss'''
- 
-        self.alpha = alpha
-        self.gd_steps = gd_steps
-        self.burn_in_steps=burn_in_steps
-
-        burn_in_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.burn_in_steps)), 0) # grid for burn in
-        grad_integration_grid = torch.cumsum(torch.tensor([self.alpha] * (self.gd_steps + 1)), 0) # grid for loss
-        self.grids = [burn_in_integration_grid, grad_integration_grid]
+            self.grids.append(grad_integration_grid.float())
 
     def run(self,x, full_trajectory=True):
         '''run: solve Kuramoto equation of motion and return a trajectory given the node features, x
@@ -131,6 +114,10 @@ class KuraNet(torch.nn.Module):
         Positional arguments are:
 
         * x (tensor): Tensor containing node features
+		
+		Keyword arguments are:
+		
+		* full_trajectory (bool, default = True) : whether or not to return the full trajectory, or just the gradient steps. 
 
         Returns
 
@@ -145,11 +132,13 @@ class KuraNet(torch.nn.Module):
             tau = x['tau']
             max_delay = tau.max().long()
             T_neg = max_delay + 1 if max_delay > 0 else max_delay
+        else:
+            T_neg = 0
         self.past_phase = torch.zeros((T_neg,num_units)).to(device)
         # Integration grids
         tneg_integration_grid = torch.cumsum(torch.tensor([self.alpha] * T_neg),0)
 
-        x = torch.cat([x[key].unsqueeze(-1) for key in x.keys()], dim=-1)
+        x = torch.cat([x[key] for key in sorted(x.keys(), key=str.lower)], dim=-1)
 
         if num_units == self.batch_size:
             couplings, _ = self.get_couplings(x)
@@ -164,10 +153,9 @@ class KuraNet(torch.nn.Module):
         else:
             raise Exception('Phase initialization not recognized.')
 
-
         # Solve ODE on all grids
         all_trajectories = []
-        t = 0
+        t = 0.0
         for g, grid in enumerate([tneg_integration_grid] + self.grids):
             self.tneg = True if g < 1 else False
             if len(grid) == 0 : continue
@@ -226,6 +214,7 @@ class KuraNet(torch.nn.Module):
 
             #Infer couplings
             couplings = self.layers(_x.view(-1, _x.shape[-1])).squeeze().reshape(self.batch_size, self.batch_size)
+
             # Normalize for fixed degree
             if self.normalize == 'node':
                 couplings = (softmax(couplings.reshape(-1),dim=-1) * (self.avg_deg * self.batch_size)).reshape(self.batch_size, self.batch_size)
@@ -245,13 +234,20 @@ class KuraNet(torch.nn.Module):
 class KuraNet_full(KuraNet):
     def __init__(self, *args, **kwargs):
         super(KuraNet_full, self).__init__(*args, **kwargs)
-        '''KuraNet_full : '''
+        '''KuraNet_full : this is a KuraNet child object whose only method is the dynamic update step associated to
+           the "full" Kuramoto model considered in the companion manuscript. That is, the `forward` method computes, for
+           each phase theta_i:
+
+               d theta_i / dt = omega_i + sum_j K_ij sin(theta_j(tau_j - t) - theta_i(t)) + h_i sin(theta_i)
+				
+           All arguments are passed to the parent object. For argument definitions, see there.'''
 
 
     def forward(self, t, y):
 
-        '''forward: one solver update step. Used by self.solver object. Separates input, y, into its constituents, including the current phase and the node
-           features. Then computes couplings as a function of these features. Finally returns the gradient at time t at the current phase. 
+        '''forward: returns the time derivative of the "full" Kuramoto model. Used by self.solver object. Separates input, y, into
+           its constituents, including the current phase and the node features. Then computes couplings as a function of these features.
+           Finally returns the gradient at time t at the current phase. 
 
            Positional arguments are 
          
@@ -260,13 +256,13 @@ class KuraNet_full(KuraNet):
 
            Returns
 
-           * delta (n-dim tensor) : the gradient at the current phase/time. Fed into torchdiffeq backend. '''
+           * delta (n-dim tensor) : the derivative at the current phase/time. Fed into torchdiffeq backend. '''
 
         # Unpack input 
         phase = y[:,-1]
         x     = y[:,:-1] 
-        omega = x[:,0]
-        h = x[:,1]
+        h = x[:,0]
+        omega = x[:,1]
         tau   = x[:,2]
         T_neg = tau.max().long() + 1 if self.tneg is False else 0
 
@@ -290,7 +286,6 @@ class KuraNet_full(KuraNet):
             phase_diffs = torch.sin(delayed_phase.unsqueeze(1) - _phase.unsqueeze(0))
         else:
             phase_diffs = torch.sin(_phase.unsqueeze(1) - _phase.unsqueeze(0))
- 
 
         # Compute external field strengths
         ext_field = _h * torch.sin(_phase)
@@ -305,24 +300,48 @@ class KuraNet_full(KuraNet):
 
 class KuraNet_xy(KuraNet):
     def __init__(self, *args, **kwargs):
-    #def __init__(self,feature_dim, num_hid_units=128, normalize='graph', avg_deg=1.0,
-    #             symmetric=True, rand_inds=False, adjoint=False, solver_method='euler',
-    #             alpha=.1, gd_steps=50, burn_in_steps=0, initial_phase='normal', set_gain=True, gain=1.0):
         super(KuraNet_xy, self).__init__(*args, **kwargs)
+        '''KuraNet_xy : this is a KuraNet child object whose only method is the dynamic update step associated to the "XY" Kuramoto model
+           considered in the companion manuscript. That is, the `forward` method computes, for each phase theta_i:
+		
+		        d theta_i / dt = sum_j K_ij sin(theta_j(t) - theta_i(t))
+				
+           This is the gradient of the negative log likelihood of the XY model from equilibrium statistical mechanics. This is technically 
+           computable with the KuraNet_full object, but it's slower and less transparent. All arguments are passed to the parent object.
+           For argument definitions, see there.'''
+		
+    def forward(self, t, y):
+        '''forward: returns the time derivative of the "XY" Kuramoto model. Used by self.solver object. Separates input, y, into its
+           constituents, including the current phase and the node features. Then computes couplings as a function of these features.
+           Finally returns the gradient at time t at the current phase. 
 
-    def forward(t, y):
+           Positional arguments are 
+         
+           * t (1-dim tensor)         : the current time step. The system can be made non-autonomous by introducing dependence on t (not implemented)
+           * y ((k+1) x n-dim tensor) : the dynamical state of the system with k+1 (feature dim + phase) x n (network size) dimensions. Includes both current phase and node features.
+
+           Returns
+
+           * delta (n-dim tensor) : the derivative at the current phase/time. Fed into torchdiffeq backend. '''
+		   
+        # Unpback input
         phase = y[:,-1]
         x     = y[:,:-1]
         num_units = phase.shape[0]
+		
+        # Compute couplings as function of input data. 
         couplings, mask = self.get_couplings(x)
 
+        # If using random sampling, keep track of randomized parameters. 
         _x = x[mask]
         _phase = phase[mask]
 
+        # Compute interaction term
         phase_diffs = torch.matmul(couplings, torch.sin(_phase)) * torch.cos(_phase)\
                     - torch.matmul(couplings, torch.cos(_phase)) * torch.sin(_phase)
 
-        local_delta = phase_diffs / self.batch_size
+        # Return derivative
+        local_delta = phase_diffs / self.batch_size # interactions are normalized here, but an equivalent effect is possible by just scaling time. 
         delta = torch.zeros_like(phase)
         delta[mask] = local_delta
 

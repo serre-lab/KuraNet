@@ -233,6 +233,23 @@ def make_all_data(num_samples=10000, data_dir='/media/data_cifs/projects/prj_syn
         make_data(dn,**data_dict)
 
 def make_data(data_name, dist_name,**kwargs):
+
+    '''make data : generates and saves data.
+	
+	Positional arguments are
+	
+	* data_name (str) : A tag for the "type" of data you are saving. For non-image data, this is used as a directory name and as a way for KuraNet to know where to put dynamically
+	                    relevant parameters, like omega, h and tau. For BSDS, it is additionally used to save and generate images.
+	* dist_name (str) : A tag for the distribution by which the data tagged by `data_name` is distributed. For instance, the data with `data_name` "omega" could be distributed as `uniform1` or `uniform2`. 
+	
+	Keyword arguments are
+	
+	* data_base_dir (str) : super directory in which data will be stored. 
+	* num_samples (int)   : how many samples to generate. For image data, this argument is not needed. 
+	* num_classes (int)   : for multi-class data, how many classes are associated with the data. 
+	* download (bool)     : whether or not to download BSDS data.'''
+	
+	# Set random seeds and return generator object except for images where data is saved using other code above. 
     if dist_name == 'uniform1':
         seed = 0
         generator = get_dist('uniform',low=-1.0,high=1.0)
@@ -262,26 +279,39 @@ def make_data(data_name, dist_name,**kwargs):
         generator = get_dist(dist_name,noise=.5)
         is_torch = False
     elif data_name == 'BSDS':
+	    # Note this is data_name and not dist_name!
         data_dir    = os.path.join(kwargs['data_base_dir'], data_name)
         generate_data_BSDS500(data_dir=data_dir,download=kwargs['download'])
         return True
     else:
         raise Exception('Distribution name not recognized!')
+		
+	# Set seed
     np.random.seed(seed)
     torch.manual_seed(seed)
+	
+	# Unpack kwargs
     data_base_dir = kwargs['data_base_dir']
     num_samples = int(kwargs['num_samples'])
+	
+	# Where training and testing data will be saved. 
     data_dir    = os.path.join(data_base_dir, data_name, dist_name)
+	
+	# Delete it if it already exists. 
     if os.path.exists(data_dir):
         subprocess.call('rm -rf {}'.format(data_dir), shell=True)
 
+    # Using the generator object, save npz file containing relevant node features. 
     for regime in ['train', 'test']:
         full_dir = os.path.join(data_dir, regime)
         os.makedirs(full_dir)
         if is_torch:
-            x = generator.sample(sample_shape=torch.Size([num_samples,])).numpy()
+            x = generator.sample(sample_shape=torch.Size([num_samples,]))
+            if len(x.shape) < 2 : x = x.unsqueeze(-1)
+            x = x.numpy()
             y = np.zeros_like(x)
         else:
             x,y = generator.sample(n_samples=num_samples)
+            if len(x.shape) < 2: x = x.reshape(-1,1)
         full_path = os.path.join(full_dir, 'features.npz') 
         np.savez(full_path,x=x,y=y)
