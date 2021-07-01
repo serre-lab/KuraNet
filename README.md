@@ -8,7 +8,7 @@ All code is written in Pytorch 1.4.0. using Python 3.5.2. After cloning this rep
 
 `pip install -r requirements.txt`
 
-to install all necessary requirements (besides Python and CUDA backend). Note that current versions of pip do not work with Python 3.5. If you encounter any installion problems, consider using pip version 20.4.3. 
+to install all necessary requirements (besides Python and CUDA backend). Note that current versions of pip do not work with Python 3.5. If you encounter any installation problems, consider using pip version 20.4.3. 
 
 ## Examples
 
