@@ -1,6 +1,6 @@
 ## KuraNet: A fully differentiable Kuramoto model for understanding disordered oscillator networks
 
-This repository contains the code for a fully-differentiable Kuramoto model in the form of "KuraNet". KuraNet, based on reference [1], is used for understanding the relationship between disordered node features and dynamical behavior by modeling this relationship as a differentiable, parametrized function. This function is a deep neural network trained by gradient descent using [torchdiffeq](https://www.github.com/rtqichen/torchdiffeq "torchdiffeq") [2].
+This repository contains the code for a fully-differentiable [Kuramoto model](https://en.wikipedia.org/wiki/Kuramoto_model "Kuramoto model") in the form of "KuraNet". KuraNet, based on reference [1], is used for understanding the relationship between disordered node features and dynamical behavior by modeling this relationship as a differentiable, parametrized function. This function is a deep neural network trained by gradient descent using [torchdiffeq](https://www.github.com/rtqichen/torchdiffeq "torchdiffeq") [2].
 
 ## Requirements and installation
 
