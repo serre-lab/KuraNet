@@ -12,6 +12,7 @@ You can change the following values in `experiments.cfg` to configure an experim
 * `data_names` (comma-separated list) Names of each of the types of data associated to a node; e.g.,  `omega,h,tau` (see `data.py`)
 * `dist_names` (comma-separated list) How each of these data types is distributed (see `data.py`). 
 * `num_classes`(int) How many classes associated to data. For non-classification experiments (e.g. global synchrony), must be set to 0. 
+* `download` (bool) Whether or not to download BSDS image data. 
 
 #### Dynamics
 
