@@ -20,10 +20,10 @@ Demos for three experiments are contained in the notebooks `global.ipynb`, `clus
 
 ## Basic Usage
 
-We consider a general Kuramoto model of the form
-$$
-\frac{d\theta_j}{dt} = f(\theta, I, K),
-$$
+We consider a general Kuramoto model of the form 
+
+<img src="https://render.githubusercontent.com/render/math?math=\frac{d\theta_j}{dt} = f(\theta, I, K),">
+
 where `K` is a coupling matrix and`I` is a random sample of intrinsic oscillator features comprising natural frequencies, external field strengths and transmission delays. Suppose a particular dynamical state (e.g. global synchrony; `theta_i ~= theta_j` for all `ij`) minimizes the loss function `L`. The goal of KuraNet is to model the differentiable function `I --> K` as a neural network so that `L` is minimized on average over realizations of `I`. KuraNet is built to model the relationship between disordered node features and couplings which gives rise to collective oscillator behavior. 
 
 To train a single model, first edit the config file `experiments.cfg` according to the experiment you'd like to run (for explanation of config fields, see below). Please be sure to change the file paths to suit your environment. This config file also contains several default experiments. Next, call
