@@ -9,7 +9,6 @@ import argparse
 from tqdm import tqdm
 from configparser import ConfigParser
 import os, csv
-import ipdb
 
 # This script is used to run evaluation. Supply one or more experiments (config headings) as a comma separated list using the shell argument --experiments to return the three evaluation metrics described in the companion manuscript. 
 

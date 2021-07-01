@@ -9,7 +9,6 @@ from configparser import ConfigParser
 import argparse
 import copy
 from models import KuraNet_xy, KuraNet_full
-import ipdb
 
 def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', normalize='node', avg_deg=1.0, symmetric=True, num_classes=0,num_epochs=10,
                               batch_size=None, burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False, initial_phase='zero',

@@ -6,7 +6,6 @@ from torch.autograd import Variable
 from torch.distributions import uniform, cauchy, normal, relaxed_bernoulli
 from utils import c_x 
 from torchdiffeq import odeint, odeint_adjoint
-import ipdb
 
 class KuraNet(torch.nn.Module):
     def __init__(self,feature_dim, num_hid_units=128, normalize='node', avg_deg=1.0,

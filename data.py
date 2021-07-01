@@ -10,7 +10,6 @@ from skimage.io import imread
 import cv2 as cv
 import os
 import urllib, tarfile
-import ipdb
 
 data_info_dict_BSDS500 = {
     "90076":{"mode":"train", "seg_ind":4, "groups":[[11], [9], [7]]},

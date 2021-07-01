@@ -5,7 +5,6 @@ import os
 from data import make_data
 from configparser import ConfigParser
 import torch
-import ipdb
 
 # Use this script to train multiple experiments at once. 
 
