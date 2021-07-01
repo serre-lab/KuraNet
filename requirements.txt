@@ -6,3 +6,5 @@ notebook == 6.0.3
 tqdm == 4.43.0
 torchvision == 0.5.0
 scipy == 1.4.1
+scikit-image == 0.15.0
+opencv-python == 4.2.0.34

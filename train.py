@@ -11,7 +11,7 @@ import copy
 from models import KuraNet_xy, KuraNet_full
 import ipdb
 
-def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', normalize=True, avg_deg=1.0, num_classes=0,num_epochs=10,
+def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model_type='full', normalize='node', avg_deg=1.0, symmetric=True, num_classes=0,num_epochs=10,
                               batch_size=None, burn_in_steps=100, gd_steps=50, alpha=.1, solver_method='euler', adjoint=False, initial_phase='zero',
                               loss_type='circular_variance', optimizer='Adam', lr=.01, momentum=0.0, max_grad_norm=10.0, set_gain=False, gain=1.0,
                               num_hid_units=128, verbose=0, measure_cx=False, show_every=50,num_eval_batches=1,rand_inds=False,
@@ -130,8 +130,6 @@ def optimize_connectivity_net(num_units, feature_dim, train_dls, test_dls, model
             # Calculate and record loss. Update
             truncated_trajectory = trajectory[-gd_steps:,...]
             ll = loss_func(truncated_trajectory, masks=masks)
-            if ll == 0:
-                ipdb.set_trace()
             lossh_train.append(ll.detach().cpu().numpy())
             ll.backward()
             norm=torch.nn.utils.clip_grad_norm_(kn.parameters(), max_norm=max_grad_norm, norm_type=2)
@@ -241,7 +239,7 @@ if __name__=='__main__':
     show_every        = int(config_dict['show_every'])
     num_eval_batches  = int(config_dict['num_eval_batches'])
     verbose           = int(config_dict['verbose'])
-    normalize         = config.getboolean(meta_args.name, 'normalize')
+    normalize         = config_dict['normalize']
     symmetric         = config.getboolean(meta_args.name, 'symmetric')
     num_batches       = int(float(num_samples) / num_units)
     rand_inds         = config.getboolean(meta_args.name, 'rand_inds')
@@ -281,9 +279,10 @@ if __name__=='__main__':
         loss_train, loss_test, kn, cx = optimize_connectivity_net(num_units,feature_dim, train_dls, test_dls, model_type=model_type,avg_deg=avg_deg,num_classes=num_classes,
 							      pretrained=pretrained, save_path=save_path,  num_epochs=num_epochs, batch_size=batch_size,
                                                               burn_in_steps=burn_in_steps, gd_steps=gd_steps,alpha=alpha, initial_phase=initial_phase,
-                                                              solver_method=solver_method, adjoint=adjoint,
-                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm, set_gain=set_gain, gain=gain,
-                                                              num_hid_units=num_hid_units, verbose=verbose, show_every=show_every,
+                                                              symmetric=symmetric, normalize=normalize,solver_method=solver_method, adjoint=adjoint,
+                                                              loss_type=loss_type, optimizer=optimizer, lr=lr, momentum=momentum, max_grad_norm=max_grad_norm,\
+                                                              set_gain=set_gain, gain=gain,
+                                                              num_hid_units=num_hid_units, verbose=verbose, show_every=show_every, measure_cx=measure_cx,
                                                               num_eval_batches=num_eval_batches, rand_inds=rand_inds, device=device)
         # Save each train loss curve and the final evaluation loss. 
         if loss_test[-1] < current_best_model[-1]: current_best_model = (kn.cpu(),seed,cx,loss_train,loss_test[-1])

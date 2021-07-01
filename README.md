@@ -8,7 +8,7 @@ All code is written in Pytorch 1.4.0. using Python 3.5.2. After cloning this rep
 
 `pip install -r requirements.txt`
 
-to install all necessary requirements (besides Python and CUDA backend).
+to install all necessary requirements (besides Python and CUDA backend). Note that current versions of pip do not work with Python 3.5. If you encounter any installion problems, consider using pip version 20.4.3. 
 
 ## Examples
 
@@ -26,23 +26,15 @@ $$
 $$
 where `K` is a coupling matrix and`I` is a random sample of intrinsic oscillator features comprising natural frequencies, external field strengths and transmission delays. Suppose a particular dynamical state (e.g. global synchrony; `theta_i ~= theta_j` for all `ij`) minimizes the loss function `L`. The goal of KuraNet is to model the differentiable function `I --> K` as a neural network so that `L` is minimized on average over realizations of `I`. KuraNet is built to model the relationship between disordered node features and couplings which gives rise to collective oscillator behavior. 
 
-To train a single model, first edit the config file `experiments.cfg` according to the experiment you'd like to run (for explanation of config fields, see below). This file also contains several default experiments. Next, call
+To train a single model, first edit the config file `experiments.cfg` according to the experiment you'd like to run (for explanation of config fields, see below). Please be sure to change the file paths to suit your environment. This config file also contains several default experiments. Next, call
 
-`python train.py --name <EXP_NAME> --num_seeds <n>` 
+`python run.py --experiments <EXP_NAME1> <EXP_NAME2> ... <EXP_NAMEn> --num_seeds <n> --device <device>` 
 
-in terminal, where `<EXP_NAME>` is the config file heading corresponding to the experiment you'd like to run and `<n>` is the number of random seeds you'd like to test. For instance, to train KuraNet on the default experiment in the config file using 1 seed, call `python train.py --name DEFAULT --num_seeds 1`.  
-
-Make sure that KuraNet has access to the data you'd like inside the folder designated by the field `data_base_dir` in the config file. You can also generate all of the data in reference [1] by calling the function `make_all_data` in `data.py`. 
-
-You can also run multiple experiments at once by calling 
-
-`python run.py --experiments <EXP_NAME1> <EXP_NAME2> ... <EXP_NAMEn> --device <device>`
-
-where `<EXP_NAMEi> `is the heading corresponding to experiment i in the config file and `<device>`is either `cpu`or `cuda`. (CPU usage is slow, so GPU is recommended.). 
+in terminal, where `<EXP_NAMEi>` is the config file heading corresponding to the experiment i,`<n>` is the number of seeds you would like to run, and <device> is either `cpu` or `gpu`. (CPU usage is slow, so GPU is recommended). To also generate the data for the experiments you'd like to run, use the shell argument `--generate_data True`. In the case of a running a single experiment, you can also simply call `python train.py --NAME <EXP_NAME> --num_seeds <n>`.
 
 ### Experiment configuration
 
-Details for each field in `experiments.cfg ` can be found in the [extended README](C:\Users\Matt Ricci\Desktop\extended_README.md). 
+Details for each field in `experiments.cfg ` can be found in the [extended README](./extended_README.md). 
 
 ### References
 

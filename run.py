@@ -2,9 +2,10 @@ import subprocess
 import argparse
 from distutils.util import strtobool
 import os 
-from data import make_all_data
+from data import make_data
 from configparser import ConfigParser
 import torch
+import ipdb
 
 # Use this script to train multiple experiments at once. 
 
@@ -19,19 +20,27 @@ argparser.add_argument('--device', type=str,default='cpu')
 argparser.add_argument('--generate_data', type=lambda x:bool(strtobool(x)), default=False)
 args = argparser.parse_args()
 
-if args.generate_data:
-    print('Generating data.')
-    make_all_data(num_samples=args.num_samples,data_dir=args.data_dir)
-
 if args.device == 'cuda':
     num_devices=torch.cuda.device_count()
     device_prefix = 'CUDA_VISIBLE_DEVICES={}'.format(device)
 else:
     num_devices = 1
     device_prefix = ''
-#experiments = ['Etau']
+
 config = ConfigParser()
 config.read('experiments.cfg')
+
+config_dict = {}
+
+if args.generate_data:
+    print('Generating data.')
+    for exp in args.experiments:
+        for (key, val) in config.items(exp):
+            config_dict[key] = val
+        data_names, dist_names = config_dict['data_names'].split(','), config_dict['dist_names'].split(',')
+        for dan, din in zip(data_names, dist_names):
+            if din == 'degenerate': continue
+            make_data(dan,din, **config_dict)
 
 for e, exp in enumerate(args.experiments):
     device = e % num_devices

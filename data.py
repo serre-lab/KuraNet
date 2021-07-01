@@ -225,13 +225,6 @@ def generate_data_BSDS500(data_dir,image_dir=None,train_prop=.5,download=False):
                      x=X[inds[train_num:]],
                      y=y[inds[train_num:]])
 
-
-def make_all_data(num_samples=10000, data_dir='/media/data_cifs/projects/prj_synchrony/data'):
-    data_names = ['o_uniform1', 'h_uniform1', 'o_uniform2', 'negative_binomial']
-    data_dict = {'data_base_dir':data_dir, 'num_samples':num_samples}
-    for dn in data_names:
-        make_data(dn,**data_dict)
-
 def make_data(data_name, dist_name,**kwargs):
 
     '''make data : generates and saves data.
@@ -264,7 +257,7 @@ def make_data(data_name, dist_name,**kwargs):
         is_torch = True
     elif dist_name == 'GMM':
         seed = 3
-        generator = get_dist(dist_name, num_classes = kwargs['num_classes'])
+        generator = get_dist(dist_name, num_classes = int(kwargs['num_classes']))
         is_torch = False
     elif dist_name == 'Moons':
         seed = 4
@@ -290,21 +283,22 @@ def make_data(data_name, dist_name,**kwargs):
     np.random.seed(seed)
     torch.manual_seed(seed)
 	
-	# Unpack kwargs
+    # Unpack kwargs
     data_base_dir = kwargs['data_base_dir']
     num_samples = int(kwargs['num_samples'])
 	
-	# Where training and testing data will be saved. 
+    # Where training and testing data will be saved. 
     data_dir    = os.path.join(data_base_dir, data_name, dist_name)
-	
-	# Delete it if it already exists. 
+
+    # Delete it if it already exists. 
     if os.path.exists(data_dir):
         subprocess.call('rm -rf {}'.format(data_dir), shell=True)
 
     # Using the generator object, save npz file containing relevant node features. 
     for regime in ['train', 'test']:
         full_dir = os.path.join(data_dir, regime)
-        os.makedirs(full_dir)
+        if not os.path.exists(full_dir):
+            os.makedirs(full_dir)
         if is_torch:
             x = generator.sample(sample_shape=torch.Size([num_samples,]))
             if len(x.shape) < 2 : x = x.unsqueeze(-1)
