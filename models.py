@@ -161,7 +161,7 @@ class KuraNet(torch.nn.Module):
             if len(grid) == 0 : continue
             grid += t
 
-            if g < 2 : # For burn_in and negative time, no gradient
+            if g < self.burn_in_chunks + 1: # For burn_in and negative time, no gradient
                 torch.set_grad_enabled(False) 
             else: 
                 torch.set_grad_enabled(True) # Turn on gradient for last grid
