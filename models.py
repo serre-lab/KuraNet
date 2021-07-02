@@ -200,9 +200,9 @@ class KuraNet(torch.nn.Module):
         num_units = x.shape[0]
 
         if self.rand_inds:
-            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).detach() # sample self.batch_size nodes
+            mask = torch.randperm(num_units)[:self.batch_size].to(x.device).long().detach() # sample self.batch_size nodes
         else:
-            mask = torch.tensor(np.arange(num_units)).to(x.device) # Otherwise mask comprises all network indices.
+            mask = torch.tensor(np.arange(num_units)).to(x.device).long() # Otherwise mask comprises all network indices.
 
         if self.fixed_couplings:
             return self.fixed[mask,:][:,mask], mask
