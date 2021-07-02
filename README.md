@@ -8,11 +8,11 @@ All code is written in Pytorch 1.4.0. using Python 3.5.2. After cloning this rep
 
 `pip install -r requirements.txt`
 
-to install all necessary requirements (besides Python, CUDA backend and ffmpeg). Note that current versions of pip do not work with Python 3.5. If you encounter any installation problems, consider using pip version 20.4.3. To install ffmpeg for animations in demos, please follow the [Linux](https://www.tecmint.com/install-ffmpeg-in-linux/ "Linux"), [Windows](https://ffmpeg.org/download.html "Windows") or [Mac](http://jollejolles.com/install-ffmpeg-on-mac-os-x/ "Mac") instructions according to your system. 
+to install all necessary requirements (besides Python, CUDA backend and ffmpeg). Note that current versions of pip do not work with Python 3.5. If you encounter any installation problems, consider using pip version 20.4.3. To install ffmpeg for animations in demos, please follow the [Linux](https://www.tecmint.com/install-ffmpeg-in-linux/ "Linux"), [Windows](https://ffmpeg.org/download.html "Windows") or [Mac](http://jollejolles.com/install-ffmpeg-on-mac-os-x/ "Mac") instructions according to your system. Installation on a system running Ubuntu 14.04 took about 5 minutes. 
 
 ## Examples
 
-Demos for three experiments are contained in the notebooks `global.ipynb`, `cluster.ipynb` and `images.ipynb`. For example, here is (top) KuraNet learning to synchronize oscillators on a sparse graph (optimized left, control right) and (bottom) an image of an elk that KuraNet has learned to synchronize:
+Demos for three experiments are contained in the notebooks `global.ipynb`, `cluster.ipynb` and `images.ipynb`. Each demo, which includes data generation, training and visualization, should take under 30 minutes to run in its entirety. For example, here is (top) KuraNet learning to synchronize oscillators on a sparse graph (optimized left, control right) and (bottom) an image of an elk that KuraNet has learned to synchronize:
 
 ![kuramoto](./kuramoto.gif)
 
@@ -41,3 +41,7 @@ Details for each field in `experiments.cfg ` can be found in the [extended READM
 [1]  Ricci, M., Jung, M., Zhang, Y., Chalvidal, M., Soni, A., & Serre, T. (2021). KuraNet: Systems of Coupled Oscillators that Learn to Synchronize, 1–9. Retrieved from http://arxiv.org/abs/2105.02838
 
 [2]  Chen, R. T. Q., Rubanova, Y., Bettencourt, J., & Duvenaud, D. (2018). Neural Ordinary Differential Equations. In 32nd Conference on Neural Information Processing Systems (NeurIPS 2018). Montréal, Canada: Curran Associates. https://doi.org/10.1007/978-3-662-55774-7_3
+
+### License
+
+This project is covered under the Apache 2.0 License.
