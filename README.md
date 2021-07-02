@@ -8,7 +8,7 @@ All code is written in Pytorch 1.4.0. using Python 3.5.2. After cloning this rep
 
 `pip install -r requirements.txt`
 
-to install all necessary requirements (besides Python and CUDA backend). Note that current versions of pip do not work with Python 3.5. If you encounter any installation problems, consider using pip version 20.4.3. 
+to install all necessary requirements (besides Python, CUDA backend and ffmpeg). Note that current versions of pip do not work with Python 3.5. If you encounter any installation problems, consider using pip version 20.4.3. To install ffmpeg for animations in demos, please follow the [Linux](https://www.tecmint.com/install-ffmpeg-in-linux/ "Linux"), [Windows](https://ffmpeg.org/download.html "Windows") or [Mac](http://jollejolles.com/install-ffmpeg-on-mac-os-x/ "Mac") instructions according to your system. 
 
 ## Examples
 
