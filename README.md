@@ -30,7 +30,7 @@ To train a single model, first edit the config file `experiments.cfg` according 
 
 `python run.py --experiments <EXP_NAME1> <EXP_NAME2> ... <EXP_NAMEn> --num_seeds <n> --device <device>` 
 
-in terminal, where `<EXP_NAMEi>` is the config file heading corresponding to the experiment i,`<n>` is the number of seeds you would like to run, and <device> is either `cpu` or `gpu`. (CPU usage is slow, so GPU is recommended). To also generate the data for the experiments you'd like to run, use the shell argument `--generate_data True`. In the case of a running a single experiment, you can also simply call `python train.py --NAME <EXP_NAME> --num_seeds <n>`.
+in terminal, where `<EXP_NAMEi>` is the config file heading corresponding to the experiment i,`<n>` is the number of seeds you would like to run, and <device> is either `cpu` or `gpu`. (CPU usage is slow, so GPU is recommended). To also generate the data for the experiments you'd like to run, use the shell argument `--generate_data True`. In the case of a running a single experiment, you can also simply call `python train.py --name <EXP_NAME> --num_seeds <n>`.
 
 ### Experiment configuration
 
